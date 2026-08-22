@@ -155,7 +155,9 @@ happens before the newcomer authenticates, so a wrong-password knock bounces
 the live session — the real viewer's auto-reconnect recovers in seconds."""
 import socket, threading, struct, time, sys
 
-LISTEN = ("0.0.0.0", int(sys.argv[1]) if len(sys.argv) > 1 else 5901)
+# Bind the auth bridge to loopback only: its sole client is the websockify
+# relay on this same Mac. The PC-facing door is websockify's port, not this one.
+LISTEN = ("127.0.0.1", int(sys.argv[1]) if len(sys.argv) > 1 else 5901)
 REAL   = ("127.0.0.1", int(sys.argv[2]) if len(sys.argv) > 2 else 5900)
 
 _session_lock = threading.Lock()

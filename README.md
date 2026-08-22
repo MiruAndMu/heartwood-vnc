@@ -83,6 +83,14 @@ That's the whole thing. From then on it opens straight into your Mac.
   Tailscale (WireGuard). **Do not** port-forward or expose ports
   5900–5902 to the internet. The safe path is the easy path: same LAN,
   or Tailscale.
+- **One active viewer, with a real tradeoff:** a new connection attempt
+  closes the current bridge connection *before* the Mac judges the
+  newcomer's password. That prevents two simultaneous viewers — but it
+  means any device that can reach the bridge can interrupt your session
+  just by knocking (it still can't get in without your password; your
+  viewer reconnects on retry). It's an availability tradeoff, not an
+  access-control guarantee — one more reason the bridge belongs on a
+  trusted network only.
 - A diagnostic log (connection events, no passwords, no screen content)
   is written locally to help with troubleshooting. Delete it anytime.
 
