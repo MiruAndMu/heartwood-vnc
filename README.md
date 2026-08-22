@@ -12,6 +12,13 @@ PC to your Mac in two ways:
   Walnut, oak, ebony, or barnwood. Brass fixtures. A nameplate. It's a real
   window — click it, type into it — dressed as furniture.
 
+## The frames, in the wild
+
+| | |
+|---|---|
+| ![Full Mac desktop framed in Walnut Classic](docs/screenshots/walnut-full-view.png) *Walnut Classic — the whole Mac, hung on Windows* | ![Settings card in Oak Modern](docs/screenshots/oak-settings.png) *Oak Modern — frame, glass & connection settings* |
+| ![Framed Mac window beside a browser, Ebony Gallery](docs/screenshots/ebony-beside-browser.png) *Ebony Gallery — living beside your PC windows* | ![A single Mac app framed in Barnwood Rustic](docs/screenshots/barnwood-single-app.png) *Barnwood Rustic — one Mac window as furniture* |
+
 Every other viewer gives you the whole remote desktop in a gray utility
 window. Heartwood lets you keep just the piece you care about — your Mac's
 music player, one chat window, a dashboard — as a persistent, native-feeling
