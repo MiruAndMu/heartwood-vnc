@@ -1,0 +1,2229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Heartwood 🦊 — Frame It</title>
+<style>
+  /* ============================================================
+     LOOKING GLASS — "Frame It" (Electron end-product)
+
+     TWO STATES, one window, one live feed:
+
+       UNFRAMED  the whole Mac desktop fills the window edge-to-edge
+                 (noVNC fit). Tiny custom chrome: "🖼 Frame It", min,
+                 close, and a thin top drag-strip.
+
+       FRAMED    a dragged, aspect-LOCKED marquee picks a Mac region;
+                 the window shrinks to a frame-sized rectangle, the
+                 picture zooms to that region, and the walnut frame
+                 assembles around it. Brass fixtures become the chrome.
+
+     The walnut frame visual + the noVNC crop math are unchanged from
+     the originals — they're just gated behind `body.framed`.
+     ============================================================ */
+
+  :root {
+    /* Walnut palette — warm, dark, heirloom */
+    --walnut-darkest: #2a1810;
+    --walnut-shadow:  #3a2417;
+    --walnut-mid:     #5a3a23;
+    --walnut-base:    #6e4727;
+    --walnut-lit:     #91623a;
+    --walnut-hi:      #b5895a;
+    --walnut-spark:   #d8b483;
+
+    /* Cream mat */
+    --mat-base:   #efe7d6;
+    --mat-shadow: #d8cdb6;
+    --mat-bevel-light: #fbf7ee;
+    --mat-bevel-core:  #c9bfa6;
+
+    /* Brass */
+    --brass-dark: #6e5418;
+    --brass-mid:  #b8912f;
+    --brass-lit:  #e8c969;
+    --brass-spark:#fff2c4;
+
+    /* Window fixtures (min/max/close/gear) — size + etch color are variables so
+       they fit thinner woods and can recolor per species (2026-07-21 §2 polish). */
+    --fix-size: 20px;                    /* default (walnut, barnwood — wide moldings) */
+    --fix-etch:    rgba(40,28,6,0.85);   /* dark etch, reads on brass (default) */
+    --fix-etch-hi: rgba(255,240,190,0.4);/* light catch-light on the etch */
+
+    /* Frame geometry (animation knobs).
+       In FRAMED mode the window IS the frame, so the frame fills the
+       window: --frame-w/h are overridden to 100vw/100vh by body.framed.
+       The molding/mat thicknesses stay fixed for a consistent look. */
+    --frame-w: 880px;
+    --frame-h: 560px;
+    --molding: 42px;   /* width of the wood molding rail */
+    --mat-pad: 26px;   /* cream mat thickness inside the molding */
+
+    --ease-settle: cubic-bezier(0.22, 0.61, 0.27, 1);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* minimize-to-taskbar animation — frameless transparent windows skip the
+     OS's own minimize animation, so we play a quick shrink/fade first. */
+  body {
+    transition: transform 0.15s ease-out, opacity 0.15s ease-out;
+    transform-origin: 50% 100%;
+  }
+  body.minimizing {
+    transition: transform 0.17s ease-in, opacity 0.17s ease-in;
+    transform: scale(0.86) translateY(60px);
+    opacity: 0;
+  }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+
+  /* ============================================================
+     UNFRAMED — the whole Mac feed fills the window. The feed mount
+     (#picture/#screen) is shared with FRAMED; only its geometry and
+     the surrounding chrome differ. Defaults below are the UNFRAMED
+     layout; body.framed re-positions everything into the walnut frame.
+     ============================================================ */
+
+  /* In UNFRAMED, the stage and the frame chrome are inert; the picture
+     spans the window. body.framed flips this. */
+  #stage {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    display: grid;
+    place-items: center;
+    pointer-events: none;   /* unframed: don't let the (hidden) frame eat clicks */
+  }
+  /* FRAMED: the #stage container must NOT capture pointer events over the
+     opening, or it swallows clicks meant for the noVNC feed beneath it.
+     Set the container itself to pass-through; the interactive frame parts
+     (.rail, #mat, #fixtures) and the feed (#picture/#screen) re-enable
+     pointer-events on themselves below. */
+  body.framed #stage { pointer-events: none; }
+
+  /* ---- the unframed full-bleed feed ---- */
+  #picture {
+    position: fixed;
+    inset: 0;                /* UNFRAMED: edge to edge */
+    z-index: 8;
+    background: #0a0a0e;
+    overflow: hidden;
+    -webkit-app-region: no-drag;   /* the feed is interactive */
+  }
+  #screen {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #0a0a0e;
+  }
+  #screen canvas { display: block; }
+  /* FRAMED: if the feed letterboxes (its fixed aspect vs the opening's aspect,
+     which drifts as --molding changes per wood), the sliver should be the mat
+     cream — not black — so it blends into the mat instead of showing a hairline.
+     Unframed stays #0a0a0e (correct behind a full-desktop feed). (2026-07-21 §2) */
+  body.framed #screen { background: var(--mat-base); }
+
+  /* ---- UNFRAMED custom chrome ---- */
+  /* (the old #dragstrip is gone — the stage window is immovable by design) */
+
+  /* the tiny corner controls: Frame It + min + close */
+  #uichrome {
+    position: fixed;
+    top: 8px; right: 10px;
+    z-index: 32;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    -webkit-app-region: no-drag;
+  }
+  body.framed #uichrome { display: none; }
+
+  #frame-it {
+    display: flex; align-items: center; gap: 6px;
+    background: rgba(20,20,28,0.78);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    color: #f2e7d2;
+    border: 1px solid rgba(216,180,131,0.35);
+    border-radius: 999px;
+    padding: 6px 13px;
+    font-size: 12.5px;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    user-select: none;
+    transition: transform 0.1s ease, border-color 0.2s ease, background 0.2s ease;
+  }
+  #frame-it:hover { border-color: rgba(216,180,131,0.8); background: rgba(28,24,18,0.88); }
+  #frame-it:active { transform: scale(0.96); }
+  #frame-it.armed {
+    border-color: rgba(255,180,90,0.9);
+    color: #ffd9a8;
+    background: rgba(40,28,14,0.9);
+  }
+
+  .ubtn {
+    width: 26px; height: 26px;
+    display: grid; place-items: center;
+    border-radius: 50%;
+    background: rgba(20,20,28,0.72);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.10);
+    color: #e8e2d6;
+    cursor: pointer;
+    transition: transform 0.1s ease, background 0.2s ease;
+    position: relative;
+  }
+  .ubtn:hover { background: rgba(40,40,52,0.85); }
+  .ubtn:active { transform: scale(0.92); }
+  /* glyphs */
+  .ubtn.min::before {
+    content: ""; width: 11px; height: 2px; background: currentColor; border-radius: 1px;
+  }
+  .ubtn.close::before, .ubtn.close::after {
+    content: ""; position: absolute; width: 13px; height: 2px;
+    background: currentColor; border-radius: 1px;
+  }
+  .ubtn.close::before { transform: rotate(45deg); }
+  .ubtn.close::after  { transform: rotate(-45deg); }
+  .ubtn.close:hover { background: rgba(180,50,50,0.85); }
+
+
+  /* ============================================================
+     THE WALNUT FRAME — opaque wood molding wrapping a cream mat
+     wrapping the picture. Shown only in body.framed. The frame
+     fills the window (the wood edge IS the window edge).
+     ============================================================ */
+  /* FULL-SIZE STAGE: the window is always work-area sized. The frame is a
+     positioned CSS object inside it — geometry lives in these vars, driven
+     by JS (drag + resize are pure CSS-variable math; the OS never resizes
+     the window, which is what makes the red maximize-flash impossible). */
+  :root { --fx: 80px; --fy: 80px; }
+
+  #frame {
+    position: relative;
+    width: var(--frame-w);
+    height: var(--frame-h);
+    display: none;            /* UNFRAMED: no wood at all */
+  }
+  body.framed #frame {
+    display: block;
+    position: fixed;
+    left: var(--fx);
+    top: var(--fy);
+  }
+  /* FRAMED: #frame is a layout container that spans the whole window, including
+     over the opening. It must NOT capture pointer events itself (that would
+     swallow feed clicks); the interactive children (.rail/#mat = drag+capture,
+     #fixtures = no-drag controls) opt back in individually. */
+  body.framed #frame { pointer-events: none; }
+
+  /* when framed, the picture lands in the mat opening. #picture is a
+     top-level element (a sibling of #frame, not a child) so it positions
+     against the window. In framed mode #frame fills the window edge-to-edge
+     (100vw/100vh), so the opening inset measured from the WINDOW edges is the
+     same molding+mat-pad math the frame's own mat/bevel use — they stay in
+     lockstep because both read --molding/--mat-pad. The picture sits BELOW the
+     wood rails/mat (z-index 4–7) but its feed is visible in the opening; #glass
+     sheen rides on top of the feed. */
+  body.framed #picture {
+    position: fixed;
+    /* inset FIRST — it's shorthand for top/right/bottom/left, so declared
+       after the coordinates it would erase them (the disembodied-frame bug,
+       found live by Mu 2026-07-06). */
+    inset: auto;
+    left:   calc(var(--fx) + var(--molding) + var(--mat-pad));
+    top:    calc(var(--fy) + var(--molding) + var(--mat-pad));
+    width:  calc(var(--frame-w) - (var(--molding) + var(--mat-pad)) * 2);
+    height: calc(var(--frame-h) - (var(--molding) + var(--mat-pad)) * 2);
+    z-index: 8;
+    /* The feed in the opening is fully interactive: it captures pointer events
+       (so the noVNC canvas receives mouse) and is NOT a window-drag region (so
+       clicking/dragging on the Mac doesn't move the frame window). */
+    pointer-events: auto;
+    -webkit-app-region: no-drag;
+  }
+
+  /* ---- The four wood molding rails ---- */
+  .rail {
+    position: absolute;
+    overflow: hidden;
+    background: var(--walnut-base);
+    z-index: 4;
+  }
+  /* FRAMED: the wood rails are interactive surfaces — they capture pointer
+     events (so they don't fall through to the feed) AND they're the JS
+     window-drag grab surface (grab the wood → move the frame window, wired in
+     script below). The old -webkit-app-region:drag was removed: Chromium's
+     drag-region hit-test is unreliable on these CSS-transformed/clip-pathed
+     rails, so JS dragging (pure CSS-var moves — see script) replaces it. */
+  body.framed .rail {
+    pointer-events: auto;
+    cursor: grab;
+  }
+  body.framed .rail.lg-grabbing { cursor: grabbing; }
+  .rail.top, .rail.bottom {
+    left: 0; right: 0;
+    height: var(--molding);
+    clip-path: polygon(
+      0 0, 100% 0,
+      calc(100% - var(--molding)) 100%,
+      var(--molding) 100%
+    );
+  }
+  .rail.top    { top: 0; }
+  .rail.bottom {
+    bottom: 0;
+    clip-path: polygon(
+      var(--molding) 0, calc(100% - var(--molding)) 0,
+      100% 100%, 0 100%
+    );
+  }
+  .rail.left, .rail.right {
+    top: 0; bottom: 0;
+    width: var(--molding);
+  }
+  .rail.left {
+    left: 0;
+    clip-path: polygon(
+      0 0, 100% var(--molding),
+      100% calc(100% - var(--molding)), 0 100%
+    );
+  }
+  .rail.right {
+    right: 0;
+    clip-path: polygon(
+      0 var(--molding), 100% 0,
+      100% 100%, 0 calc(100% - var(--molding))
+    );
+  }
+
+  .rail.top::before, .rail.bottom::before,
+  .rail.left::before, .rail.right::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+  }
+  .rail.top::before {
+    background:
+      linear-gradient(180deg,
+        var(--walnut-hi) 0%,
+        var(--walnut-spark) 3%,
+        var(--walnut-lit) 9%,
+        var(--walnut-shadow) 20%,
+        var(--walnut-mid) 30%,
+        var(--walnut-lit) 46%,
+        var(--walnut-base) 64%,
+        var(--walnut-hi) 80%,
+        var(--walnut-spark) 84%,
+        var(--walnut-mid) 90%,
+        var(--walnut-darkest) 100%);
+  }
+  .rail.bottom::before {
+    background:
+      linear-gradient(180deg,
+        var(--walnut-darkest) 0%,
+        var(--walnut-mid) 8%,
+        var(--walnut-lit) 14%,
+        var(--walnut-base) 18%,
+        var(--walnut-mid) 36%,
+        var(--walnut-base) 54%,
+        var(--walnut-mid) 70%,
+        var(--walnut-shadow) 80%,
+        var(--walnut-base) 92%,
+        var(--walnut-lit) 97%,
+        var(--walnut-mid) 100%);
+  }
+  .rail.left::before {
+    background:
+      linear-gradient(90deg,
+        var(--walnut-lit) 0%,
+        var(--walnut-hi) 4%,
+        var(--walnut-base) 10%,
+        var(--walnut-shadow) 20%,
+        var(--walnut-mid) 30%,
+        var(--walnut-base) 50%,
+        var(--walnut-lit) 70%,
+        var(--walnut-hi) 80%,
+        var(--walnut-spark) 84%,
+        var(--walnut-mid) 90%,
+        var(--walnut-darkest) 100%);
+  }
+  .rail.right::before {
+    background:
+      linear-gradient(90deg,
+        var(--walnut-darkest) 0%,
+        var(--walnut-mid) 10%,
+        var(--walnut-spark) 16%,
+        var(--walnut-hi) 20%,
+        var(--walnut-base) 30%,
+        var(--walnut-mid) 50%,
+        var(--walnut-shadow) 70%,
+        var(--walnut-mid) 80%,
+        var(--walnut-base) 90%,
+        var(--walnut-mid) 96%,
+        var(--walnut-darkest) 100%);
+  }
+
+  .rail::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    mix-blend-mode: multiply;
+    opacity: 0.55;
+    pointer-events: none;
+  }
+  .rail.top::after, .rail.bottom::after {
+    background:
+      repeating-linear-gradient(90deg,
+        rgba(40,22,12,0.00) 0px,
+        rgba(40,22,12,0.16) 2px,
+        rgba(120,80,48,0.05) 5px,
+        rgba(40,22,12,0.10) 9px,
+        rgba(90,58,35,0.00) 14px,
+        rgba(40,22,12,0.18) 20px,
+        rgba(40,22,12,0.00) 27px),
+      repeating-linear-gradient(91deg,
+        rgba(20,10,5,0.00) 0px,
+        rgba(20,10,5,0.10) 60px,
+        rgba(20,10,5,0.00) 130px),
+      radial-gradient(40px 8px at 28% 50%, rgba(30,16,8,0.22), transparent 70%),
+      radial-gradient(60px 10px at 68% 46%, rgba(30,16,8,0.16), transparent 72%);
+  }
+  .rail.left::after, .rail.right::after {
+    background:
+      repeating-linear-gradient(0deg,
+        rgba(40,22,12,0.00) 0px,
+        rgba(40,22,12,0.16) 2px,
+        rgba(120,80,48,0.05) 5px,
+        rgba(40,22,12,0.10) 9px,
+        rgba(90,58,35,0.00) 14px,
+        rgba(40,22,12,0.18) 20px,
+        rgba(40,22,12,0.00) 27px),
+      repeating-linear-gradient(1deg,
+        rgba(20,10,5,0.00) 0px,
+        rgba(20,10,5,0.10) 60px,
+        rgba(20,10,5,0.00) 130px),
+      radial-gradient(8px 40px at 50% 30%, rgba(30,16,8,0.22), transparent 70%),
+      radial-gradient(10px 60px at 46% 70%, rgba(30,16,8,0.16), transparent 72%);
+  }
+
+  .miter {
+    position: absolute;
+    width: var(--molding);
+    height: var(--molding);
+    z-index: 5;
+    pointer-events: none;
+  }
+  .miter::before { content: ""; position: absolute; inset: 0; }
+  .miter.tl { top: 0; left: 0; }
+  .miter.tr { top: 0; right: 0; }
+  .miter.bl { bottom: 0; left: 0; }
+  .miter.br { bottom: 0; right: 0; }
+  .miter.tl::before, .miter.br::before {
+    background: linear-gradient(135deg,
+      transparent calc(50% - 1px),
+      rgba(255,230,190,0.28) 50%,
+      rgba(30,16,8,0.30) calc(50% + 1px),
+      transparent calc(50% + 2px));
+  }
+  .miter.tr::before, .miter.bl::before {
+    background: linear-gradient(45deg,
+      transparent calc(50% - 1px),
+      rgba(255,230,190,0.28) 50%,
+      rgba(30,16,8,0.30) calc(50% + 1px),
+      transparent calc(50% + 2px));
+  }
+
+
+  /* ============================================================
+     THE MAT — cream, beveled core edge. Only in framed mode.
+     ============================================================ */
+  #mat {
+    position: absolute;
+    top: var(--molding);
+    left: var(--molding);
+    right: var(--molding);
+    bottom: var(--molding);
+    z-index: 6;
+    display: none;
+    background:
+      radial-gradient(120% 120% at 30% 20%, var(--mat-base), var(--mat-shadow) 130%);
+    box-shadow:
+      inset 0 3px 6px rgba(120,90,50,0.18),
+      inset 3px 0 6px rgba(120,90,50,0.12),
+      inset 0 -2px 5px rgba(255,255,255,0.30);
+    overflow: hidden;
+    /* A picture mat is a BORDER WITH A HOLE, not a solid panel. Punch a
+       transparent rectangular cutout at the opening (inset by --mat-pad on
+       every side) so the #picture feed behind the stage shows through. The
+       mat is now only cream in the --mat-pad band; z-order at the opening
+       center no longer matters because nothing is painted there. evenodd
+       fill rule: outer rect minus the reversed inner rect = a frame. */
+    clip-path: polygon(evenodd,
+      0 0, 100% 0, 100% 100%, 0 100%,
+      0 0,
+      var(--mat-pad) var(--mat-pad),
+      var(--mat-pad) calc(100% - var(--mat-pad)),
+      calc(100% - var(--mat-pad)) calc(100% - var(--mat-pad)),
+      calc(100% - var(--mat-pad)) var(--mat-pad),
+      var(--mat-pad) var(--mat-pad)
+    );
+  }
+  body.framed #mat { display: block; }
+  /* FRAMED: the cream mat band is part of the wood/drag surface. It captures
+     pointer events and drags the window. Its clip-path punches a transparent
+     hole at the opening — clipped-away pixels receive NO pointer events, so
+     clicks over the opening still fall through to the feed beneath. */
+  body.framed #mat {
+    pointer-events: auto;
+    cursor: grab;
+  }
+  body.framed #mat.lg-grabbing { cursor: grabbing; }
+  #mat::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      repeating-linear-gradient(0deg, rgba(140,120,90,0.025) 0 1px, transparent 1px 3px),
+      repeating-linear-gradient(90deg, rgba(140,120,90,0.025) 0 1px, transparent 1px 3px);
+    opacity: 0.7;
+    pointer-events: none;
+  }
+
+  #bevel {
+    position: absolute;
+    top: var(--mat-pad);
+    left: var(--mat-pad);
+    right: var(--mat-pad);
+    bottom: var(--mat-pad);
+    z-index: 7;
+    border-style: solid;
+    border-width: 7px;
+    border-image: conic-gradient(
+      from 0deg,
+      var(--mat-bevel-core)  0deg 90deg,
+      var(--mat-bevel-core)  90deg 180deg,
+      var(--mat-bevel-light) 180deg 270deg,
+      var(--mat-bevel-light) 270deg 360deg
+    ) 1;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.9),
+      inset 1px 0 0 rgba(255,255,255,0.7),
+      inset 0 -1px 0 rgba(150,135,110,0.55),
+      inset -1px 0 0 rgba(150,135,110,0.45),
+      0 2px 8px rgba(60,45,25,0.35);
+    pointer-events: none;
+  }
+  #bevel::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.95),
+      inset 1px 0 0 rgba(255,255,255,0.8),
+      inset 0 -1px 0 rgba(120,105,80,0.6),
+      inset -1px 0 0 rgba(120,105,80,0.5);
+    pointer-events: none;
+  }
+
+
+  /* glass reflection sheen across the picture — framed only */
+  #glass {
+    position: absolute; inset: 0;
+    z-index: 9;
+    pointer-events: none;
+    display: none;
+    background:
+      linear-gradient(118deg,
+        rgba(255,255,255,0.00) 0%,
+        rgba(255,255,255,0.00) 30%,
+        rgba(255,255,255,0.07) 42%,
+        rgba(255,255,255,0.14) 47%,
+        rgba(255,255,255,0.03) 52%,
+        rgba(255,255,255,0.00) 64%,
+        rgba(255,255,255,0.00) 100%);
+    mix-blend-mode: screen;
+    opacity: 0.9;
+  }
+  body.framed #glass { display: block; }
+
+
+  /* ============================================================
+     BRASS WINDOW FIXTURES — framed-mode controls, set in the
+     bottom rail. min / max / close. Wired to the same window.lg.
+     ============================================================ */
+  #fixtures {
+    position: absolute;
+    bottom: calc((var(--molding) - var(--fix-size)) / 2);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 12;
+    display: none;
+    gap: 14px;
+    opacity: 0.35;
+    transition: opacity 0.45s ease;
+    -webkit-app-region: no-drag;
+  }
+  body.framed #fixtures { display: flex; }
+  /* FRAMED: brass controls are clickable (re-enable pointer-events since the
+     #stage/#frame ancestors are pass-through) and are NOT a drag region, so a
+     click hits the button instead of moving the window. */
+  body.framed #fixtures { pointer-events: auto; }
+  /* #frame is now pointer-events:none so `#frame:hover` no longer fires; key
+     the brass brighten off the interactive surfaces that DO receive hover.
+     #fixtures is a later sibling of every .rail and #mat inside #frame, so the
+     general-sibling combinator reaches it when any wood/mat is hovered. */
+  body.framed .rail:hover ~ #fixtures,
+  body.framed #mat:hover ~ #fixtures,
+  body.framed #fixtures:hover { opacity: 1; }
+  .fix {
+    width: var(--fix-size); height: var(--fix-size);
+    border-radius: 50%;
+    cursor: pointer;
+    position: relative;
+    background:
+      radial-gradient(circle at 38% 30%,
+        var(--brass-spark) 0%,
+        var(--brass-lit) 22%,
+        var(--brass-mid) 58%,
+        var(--brass-dark) 100%);
+    box-shadow:
+      inset 0 1px 1px rgba(255,245,200,0.8),
+      inset 0 -2px 3px rgba(40,30,5,0.7),
+      0 2px 3px rgba(0,0,0,0.5),
+      0 0 0 2px rgba(30,18,8,0.55);
+    display: grid; place-items: center;
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
+  .fix:hover { transform: translateY(-1px); }
+  .fix:active { transform: translateY(1px) scale(0.96); }
+  .fix .gl { width: 10px; height: 10px; position: relative; opacity: 0.85; }
+  .fix.min .gl::before {
+    content: ""; position: absolute; left: 0; right: 0; top: 50%;
+    height: 2px; background: var(--fix-etch);
+    box-shadow: 0 1px 0 var(--fix-etch-hi);
+  }
+  .fix.max .gl::before {
+    content: ""; position: absolute; inset: 0;
+    border: 2px solid var(--fix-etch);
+    border-radius: 1px;
+    box-shadow: 0 1px 0 var(--fix-etch-hi);
+  }
+  .fix.close .gl::before,
+  .fix.close .gl::after {
+    content: ""; position: absolute; left: 50%; top: 0; bottom: 0;
+    width: 2px; background: var(--fix-etch);
+    box-shadow: 1px 0 0 var(--fix-etch-hi);
+  }
+  .fix.close .gl::before { transform: translateX(-50%) rotate(45deg); }
+  .fix.close .gl::after  { transform: translateX(-50%) rotate(-45deg); }
+
+  /* ============================================================
+     LG SETTINGS GEAR + PANEL  (Phase 3 — added 2026-07-21)
+     The gear is a fourth brass fixture; clicking it slides a warm
+     parchment settings panel into the picture area (onboarding's home),
+     not a floating modal. Rollback: index.html.bak-20260721-pre-settings-gear
+     ============================================================ */
+  /* The gear is DRAWN like its siblings (min/max/close), not a font glyph —
+     the \2699 character's ink sits off-center in its em box and the offset
+     varies by platform font, so it could never be pixel-centered on the PC.
+     Geometry centers by construction: six teeth (conic wedges masked to the
+     rim band) around a ring body with an open hub. Scales per wood. */
+  /* Gear sizes are hand-picked INTEGERS parity-matched to each wood's
+     fixture size (not a multiplier — 20 × 0.68 = 13.6px forced the renderer
+     to snap the fraction into one edge, visibly squishing walnut's right
+     side). Integer size + integer margins = every edge on the pixel grid. */
+  .fix.gear .gl {
+    width: var(--gear-size, 14px);   /* walnut 20: 3px margins */
+    height: var(--gear-size, 14px);
+  }
+  .fix.gear .gl::before { /* six teeth on the rim */
+    content: ""; position: absolute; inset: 0; border-radius: 50%;
+    background: repeating-conic-gradient(from -13deg,
+      var(--fix-etch) 0deg 26deg, transparent 26deg 60deg);
+    -webkit-mask: radial-gradient(circle, transparent 0 52%, #000 53%);
+    mask: radial-gradient(circle, transparent 0 52%, #000 53%);
+  }
+  .fix.gear .gl::after { /* ring body, open hub — integer inset, same reason */
+    content: ""; position: absolute; inset: var(--gear-inset, 2px);
+    border: 2px solid var(--fix-etch); border-radius: 50%;
+    box-shadow: 0 1px 0 var(--fix-etch-hi);
+  }
+  body.settings-open .fix.gear {
+    box-shadow:
+      inset 0 1px 1px rgba(255,245,200,0.8),
+      inset 0 -2px 3px rgba(40,30,5,0.7),
+      0 0 0 2px rgba(30,18,8,0.55),
+      0 0 8px 1px rgba(255,214,110,0.9);
+  }
+  body.settings-open .fix.gear .gl {
+    opacity: 1; /* etch pops to full alongside the brass glow */
+  }
+
+  /* The panel lives inside #picture so it covers the live feed while open. */
+  #lg-settings {
+    position: absolute; inset: 0;
+    z-index: 30;
+    display: flex; flex-direction: column;
+    background:
+      linear-gradient(158deg, #f5eddc 0%, #efe6d1 46%, #e4d9be 100%);
+    box-shadow:
+      inset 0 0 0 1px rgba(255,255,255,0.5),
+      inset 0 2px 6px rgba(120,100,60,0.18),
+      inset 0 -2px 8px rgba(120,100,60,0.22);
+    color: #4a3b22;
+    font: 13px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+    opacity: 0; transform: scale(0.985);
+    pointer-events: none;
+    transition: opacity 0.26s ease, transform 0.26s ease;
+    overflow: hidden;
+  }
+  body.framed.settings-open #lg-settings { opacity: 1; transform: scale(1); pointer-events: auto; }
+
+  #lg-settings .lg-set-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px 10px;
+    border-bottom: 1px solid rgba(120,90,50,0.22);
+    background: linear-gradient(180deg, rgba(255,252,244,0.6), rgba(255,252,244,0));
+    flex: 0 0 auto;
+  }
+  #lg-settings .lg-set-title {
+    font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+    font-size: 11px; color: #6e5a34;
+  }
+  #lg-settings .lg-set-title b { color: #4a3b22; font-weight: 700; }
+  #lg-settings .lg-set-close {
+    width: 22px; height: 22px; border-radius: 50%;
+    display: grid; place-items: center; cursor: pointer;
+    color: #6e5a34; font-size: 15px; line-height: 1;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  #lg-settings .lg-set-close:hover { background: rgba(120,90,50,0.14); color: #3a2c14; }
+
+  #lg-settings .lg-set-body { flex: 1 1 auto; overflow-y: auto; padding: 6px 6px 12px; }
+  #lg-settings .lg-sec {
+    padding: 11px 14px 12px;
+    border-bottom: 1px solid rgba(120,90,50,0.12);
+  }
+  #lg-settings .lg-sec:last-child { border-bottom: 0; }
+  #lg-settings .lg-sec-label {
+    display: flex; align-items: center; gap: 7px;
+    font-weight: 600; font-size: 11px; letter-spacing: 0.05em;
+    text-transform: uppercase; color: #7a6540; margin-bottom: 9px;
+  }
+  #lg-settings .lg-sec-hint { font-size: 11px; color: #8a774f; margin-top: 7px; }
+
+  /* ---- FRAME SHOP: the four woods (Phase 3 §2, 2026-07-21) --------------
+     Each wood remaps the grain palette vars the rails already read, AND its
+     true --molding width. The picture crop math reads --molding in lockstep,
+     so swapping woods auto-recrops the feed. Walnut is the default (:root),
+     so body.wood-walnut needs no overrides. Real geometry: 42/30/26/56px. */
+  body.wood-oak {
+    --walnut-darkest: #6b4e28; --walnut-shadow: #7d5c30; --walnut-mid: #a07d43;
+    --walnut-base:    #c9a468; --walnut-lit:    #d8b87f; --walnut-hi:  #e6cfa3;
+    --walnut-spark:   #f2e2c4;
+    --mat-base: #f7f4ec; --mat-shadow: #e4ded0;
+    --molding: 30px; --mat-pad: 38px;  /* 30+38 = 68: opening stays walnut-identical, feed fits perfectly */
+    --fix-size: 17px;   /* thinner molding → slightly smaller fixtures */
+    --gear-size: 11px;  /* odd on odd 17: integer 3px margins */
+  }
+  body.wood-ebony {
+    --walnut-darkest: #0e0e10; --walnut-shadow: #141416; --walnut-mid: #232327;
+    --walnut-base:    #2a2a2e; --walnut-lit:    #3a3a3e; --walnut-hi:  #4a4a50;
+    --walnut-spark:   #5c5c64;
+    --mat-base: #f6f4ef; --mat-shadow: #d6d2c8;
+    --molding: 26px; --mat-pad: 42px;  /* 26+42 = 68: thin gallery frame + generous mat (classic gallery look) */
+    --fix-size: 15px;   /* thinnest gallery molding → smallest fixtures */
+    --gear-size: 11px;  /* odd on odd 15: integer 2px margins */
+    /* dark gunmetal fixtures to match the black wood, with light etch */
+    --brass-dark: #141417; --brass-mid: #34343c; --brass-lit: #6a6a74; --brass-spark: #9a9aa6;
+    --fix-etch: rgba(226,226,232,0.9); --fix-etch-hi: rgba(0,0,0,0.35);
+  }
+  body.wood-barnwood {
+    --walnut-darkest: #2c261f; --walnut-shadow: #423a30; --walnut-mid: #6f6253;
+    --walnut-base:    #7d6444; --walnut-lit:    #968873; --walnut-hi:  #b3a48c;
+    --walnut-spark:   #cdc2a8;
+    --mat-base: #efe7d4; --mat-shadow: #cdc2a8;
+    --molding: 56px; --mat-pad: 12px;  /* 56+12 = 68: chunky rustic frame + slim mat */
+    /* barnwood uses the default warm-brass fixtures; a touch bigger for the chunky rail */
+    --fix-size: 22px;
+    --gear-size: 16px;  /* even on even 22: integer 3px margins */
+    --gear-inset: 3px;  /* keeps the hub proportional at the bigger size */
+  }
+
+  /* wood swatch picker chips */
+  .lg-woods { display: flex; gap: 9px; }
+  .lg-wood {
+    flex: 1 1 0; height: 46px; border-radius: 5px; cursor: pointer;
+    position: relative; overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(60,40,15,0.35), 0 1px 2px rgba(0,0,0,0.2);
+    transition: transform 0.12s ease, box-shadow 0.15s ease;
+  }
+  .lg-wood:hover { transform: translateY(-1px); }
+  .lg-wood::before { /* the wood face, a mini grain of that species */
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(160deg,
+      var(--sw-hi) 0%, var(--sw-spark) 10%, var(--sw-lit) 26%,
+      var(--sw-base) 52%, var(--sw-mid) 74%, var(--sw-shadow) 90%, var(--sw-dark) 100%);
+  }
+  .lg-wood .lg-wood-name {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    font-size: 9px; letter-spacing: 0.04em; text-align: center;
+    padding: 2px 0 3px; color: var(--sw-ink);
+    background: linear-gradient(180deg, transparent, rgba(0,0,0,0.28));
+    text-shadow: 0 1px 1px rgba(0,0,0,0.5);
+  }
+  .lg-wood[data-wood="walnut"]   { --sw-dark:#2a1810; --sw-shadow:#3a2417; --sw-mid:#5a3a23; --sw-base:#6e4727; --sw-lit:#91623a; --sw-spark:#b5895a; --sw-hi:#d8b483; --sw-ink:#f4e6cf; }
+  .lg-wood[data-wood="oak"]      { --sw-dark:#946f3a; --sw-shadow:#b58c4e; --sw-mid:#c9a468; --sw-base:#d8b87f; --sw-lit:#e6cfa3; --sw-spark:#f2e2c4; --sw-hi:#f7efd8; --sw-ink:#5a4520; }
+  .lg-wood[data-wood="ebony"]    { --sw-dark:#0e0e10; --sw-shadow:#18181b; --sw-mid:#232327; --sw-base:#2f2f34; --sw-lit:#3f3f45; --sw-spark:#52525a; --sw-hi:#6a6a72; --sw-ink:#e6e6ea; }
+  .lg-wood[data-wood="barnwood"] { --sw-dark:#2c261f; --sw-shadow:#423a30; --sw-mid:#6f6253; --sw-base:#7d6444; --sw-lit:#968873; --sw-spark:#b3a48c; --sw-hi:#cdc2a8; --sw-ink:#f0e8d6; }
+  .lg-wood.active {
+    box-shadow: inset 0 0 0 2px rgba(255,236,180,0.95),
+                0 0 0 2px rgba(120,90,40,0.6), 0 2px 5px rgba(0,0,0,0.3);
+  }
+  .lg-wood.active::after {
+    content: "\2713"; position: absolute; top: 3px; right: 5px;
+    font-size: 11px; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+  }
+
+  /* ---- SETTINGS TOGGLES + CONNECTION VIEW (Phase 3 §3-5, 2026-07-21) ----
+     A brass-knob switch on a parchment track, shared by the Glass and
+     Cursor rows. Checked = knob slides right and warms to lit brass. */
+  .lg-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px;
+  }
+  .lg-row .lg-row-text { min-width: 0; }
+  .lg-row .lg-row-name { font-size: 12.5px; color: #4a3b22; font-weight: 600; }
+  .lg-row .lg-row-sub  { font-size: 10.5px; color: #8a774f; margin-top: 2px; }
+  .lg-toggle {
+    flex: 0 0 auto; width: 40px; height: 22px; border-radius: 11px;
+    position: relative; cursor: pointer;
+    background: linear-gradient(180deg, #d9cdb4, #e8dfc9);
+    box-shadow: inset 0 1px 3px rgba(90,70,40,0.35),
+                inset 0 0 0 1px rgba(120,90,50,0.28);
+    transition: background 0.18s ease;
+  }
+  .lg-toggle::after { /* the brass knob */
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%,
+      var(--brass-spark, #e8c87a) 0%, var(--brass-lit, #c9a95c) 40%,
+      var(--brass-mid, #8a6d35) 80%, var(--brass-dark, #5a4520) 100%);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.35),
+                inset 0 0 0 1px rgba(60,40,10,0.3);
+    transition: left 0.18s ease;
+  }
+  .lg-toggle.on {
+    background: linear-gradient(180deg, #c9b98a, #ddd0a8);
+    box-shadow: inset 0 1px 3px rgba(90,70,40,0.3),
+                inset 0 0 0 1px rgba(150,115,55,0.45),
+                inset 0 0 8px rgba(220,180,90,0.25);
+  }
+  .lg-toggle.on::after { left: 20px; }
+
+  /* §3: the glass-sheen kill switch. Placed after body.framed #glass
+     (same specificity, later rule wins) so no-glass beats framed. */
+  body.no-glass #glass { display: none; }
+
+  /* §5: read-only connection view — a listener, not a control */
+  .lg-conn { font-size: 11.5px; color: #5a4a2c; }
+  .lg-conn-line {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 2.5px 0;
+  }
+  .lg-conn-line .k { color: #8a774f; }
+  .lg-conn-line .v { font-weight: 600; color: #4a3b22; }
+  .lg-conn-state { display: flex; align-items: center; gap: 6px; }
+  .lg-conn-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #b0a488; box-shadow: inset 0 0 2px rgba(0,0,0,0.3);
+  }
+  .lg-conn-dot.ok {
+    background: radial-gradient(circle at 35% 30%, #9fd98a, #4f9c3c);
+    box-shadow: 0 0 5px rgba(110,190,90,0.55), inset 0 0 2px rgba(0,0,0,0.2);
+  }
+  .lg-conn-dot.warn {
+    background: radial-gradient(circle at 35% 30%, #f0cf8a, #c98f2e);
+    box-shadow: 0 0 5px rgba(230,170,70,0.55), inset 0 0 2px rgba(0,0,0,0.2);
+  }
+  .lg-conn-change {
+    margin-top: 8px; font-size: 11px; color: #7a6540;
+    text-decoration: underline; cursor: pointer; display: inline-block;
+  }
+  .lg-conn-change:hover { color: #4a3b22; }
+
+  /* ---- FIRST-RUN SETUP — "hang your first frame" (Heartwood, 2026-07-21) --
+     Shown when no connection config exists (or auth fails). A parchment
+     card on the dark stage; the address + password go to main via IPC and
+     the password is encrypted at rest (safeStorage). Nothing hardcoded. */
+  #firstrun {
+    position: fixed; inset: 0; z-index: 40;
+    display: none;
+    align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at 50% 42%, #16161c 0%, #0a0a0e 75%);
+  }
+  body.firstrun #firstrun { display: flex; }
+  .fr-card {
+    width: 380px; max-width: calc(100vw - 60px);
+    background: linear-gradient(165deg, #f4edda 0%, #ece2c8 55%, #e4d8ba 100%);
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 1px rgba(120,90,50,0.35),
+                inset 0 0 26px rgba(120,90,50,0.12),
+                0 12px 40px rgba(0,0,0,0.6);
+    padding: 26px 28px 24px;
+  }
+  .fr-title {
+    font-size: 21px; letter-spacing: 3px; text-transform: uppercase;
+    color: #4a3b22; font-weight: 700; text-align: center;
+  }
+  .fr-sub {
+    font-size: 11.5px; color: #8a774f; text-align: center;
+    margin: 4px 0 20px; letter-spacing: 0.4px;
+  }
+  .fr-label {
+    display: block; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.05em; text-transform: uppercase;
+    color: #7a6540; margin: 13px 0 0;
+  }
+  .fr-card input {
+    display: block; width: 100%; box-sizing: border-box;
+    margin-top: 5px; padding: 8px 10px;
+    font-size: 13.5px; color: #3a2c14;
+    background: rgba(255,252,242,0.75);
+    border: 1px solid rgba(120,90,50,0.4); border-radius: 4px;
+    outline: none;
+  }
+  .fr-card input:focus {
+    border-color: rgba(150,115,55,0.85);
+    box-shadow: 0 0 0 2px rgba(216,180,131,0.35);
+  }
+  .fr-hint { font-size: 10.5px; color: #8a774f; margin-top: 5px; }
+  .fr-err {
+    min-height: 15px; font-size: 11.5px; color: #a03d2a;
+    margin-top: 12px; text-align: center;
+  }
+  .fr-btn {
+    margin-top: 10px; padding: 10px 0; text-align: center;
+    font-size: 12.5px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #f4e6cf; cursor: pointer;
+    border-radius: 5px; user-select: none;
+    background: linear-gradient(180deg, #8a6d35, #6e4727 60%, #5a3a23);
+    box-shadow: inset 0 1px 0 rgba(255,235,190,0.4),
+                inset 0 -2px 4px rgba(30,18,8,0.5), 0 2px 5px rgba(0,0,0,0.4);
+  }
+  .fr-btn:hover  { filter: brightness(1.08); }
+  .fr-btn:active { transform: translateY(1px); }
+
+  /* ============================================================
+     CORNER RESIZE GRIPS — framed only. Invisible hit zones riding
+     the frame's corners; the resize cursor is the affordance.
+     Aspect stays locked (the JS derives height from width).
+     ============================================================ */
+  .grip {
+    position: absolute;
+    width: 46px; height: 46px;
+    z-index: 13;
+    display: none;
+    pointer-events: none;
+    -webkit-app-region: no-drag;
+  }
+  body.framed .grip { display: block; pointer-events: auto; }
+  .grip.tl { top: -6px;    left: -6px;  cursor: nwse-resize; }
+  .grip.tr { top: -6px;    right: -6px; cursor: nesw-resize; }
+  .grip.bl { bottom: -6px; left: -6px;  cursor: nesw-resize; }
+  .grip.br { bottom: -6px; right: -6px; cursor: nwse-resize; }
+
+
+  /* ============================================================
+     ASSEMBLY ANIMATION — plays when a region is framed.
+     ============================================================ */
+  #frame.assembling .rail.top    { transform: translateY(-160%); opacity: 0; }
+  #frame.assembling .rail.bottom { transform: translateY(160%);  opacity: 0; }
+  #frame.assembling .rail.left   { transform: translateX(-160%); opacity: 0; }
+  #frame.assembling .rail.right  { transform: translateX(160%);  opacity: 0; }
+  #frame.assembling .miter       { opacity: 0; }
+  #frame.assembling #mat         { transform: translateY(-14px) scale(0.985); opacity: 0; }
+  #frame.assembling #bevel       { opacity: 0; }
+  /* #picture/#glass are now siblings of #frame (top-level), not descendants,
+     so the assembly state is read off #frame via :has() on a common ancestor. */
+  body:has(#frame.assembling) #picture { filter: brightness(0.5) blur(2px); }
+  body:has(#frame.assembling) #glass   { opacity: 0; }
+  #frame.assembling #fixtures    { opacity: 0; }
+
+  .rail   { transition: transform 0.85s var(--ease-settle), opacity 0.5s ease; }
+  .miter  { transition: opacity 0.4s ease 0.85s; }
+  #mat    { transition: transform 0.7s var(--ease-settle) 0.9s, opacity 0.6s ease 0.9s; }
+  #bevel  { transition: opacity 0.6s ease 1.15s; }
+  #glass  { transition: opacity 1.2s ease 1.7s; }
+  #picture{ transition: filter 1.0s ease 0.6s; }
+
+  .rail.top    { transition-delay: 0s, 0s; }
+  .rail.left   { transition-delay: 0.12s, 0.12s; }
+  .rail.right  { transition-delay: 0.24s, 0.24s; }
+  .rail.bottom { transition-delay: 0.36s, 0.36s; }
+
+
+  /* ============================================================
+     DISASSEMBLY ANIMATION — plays in REVERSE when un-framing, so the
+     wood retreats gracefully BEFORE the OS maximizes (no warm-wood
+     flash mid-maximize). Same end-state as .assembling (rails slid
+     away, mat/bevel/glass/fixtures faded) but its OWN snappier,
+     reverse-ordered timing so it completes in ~520ms. The JS waits
+     for this to finish (wood gone) before telling main to maximize.
+     ============================================================ */
+  #frame.disassembling .rail.top    { transform: translateY(-160%); opacity: 0; }
+  #frame.disassembling .rail.bottom { transform: translateY(160%);  opacity: 0; }
+  #frame.disassembling .rail.left   { transform: translateX(-160%); opacity: 0; }
+  #frame.disassembling .rail.right  { transform: translateX(160%);  opacity: 0; }
+  #frame.disassembling .miter       { opacity: 0; }
+  #frame.disassembling #mat         { transform: translateY(-14px) scale(0.985); opacity: 0; }
+  #frame.disassembling #bevel       { opacity: 0; }
+  #frame.disassembling #fixtures    { opacity: 0; }
+  body:has(#frame.disassembling) #glass { opacity: 0; }
+
+  /* Reverse timing: glass/bevel/mat fade FIRST, then the rails slide out
+     (mat → bevel → rails), mirroring the forward order in reverse. Total
+     ~520ms before the wood is fully gone. */
+  #frame.disassembling #glass       { transition: opacity 0.18s ease 0s; }
+  #frame.disassembling #bevel       { transition: opacity 0.18s ease 0.04s; }
+  #frame.disassembling #mat         { transition: transform 0.26s var(--ease-settle) 0.1s, opacity 0.24s ease 0.1s; }
+  #frame.disassembling .miter       { transition: opacity 0.16s ease 0.14s; }
+  #frame.disassembling #fixtures    { transition: opacity 0.16s ease 0s; }
+  #frame.disassembling .rail        { transition: transform 0.34s var(--ease-settle), opacity 0.26s ease; }
+  #frame.disassembling .rail.bottom { transition-delay: 0.18s; }
+  #frame.disassembling .rail.right  { transition-delay: 0.24s; }
+  #frame.disassembling .rail.left   { transition-delay: 0.3s; }
+  #frame.disassembling .rail.top    { transition-delay: 0.34s; }
+
+
+  /* ============================================================
+     CONNECTION STATUS — floats over the picture. Positioned for
+     UNFRAMED by default; re-pinned inside the opening when framed.
+     ============================================================ */
+  #status {
+    position: fixed;
+    top: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(20, 20, 28, 0.78);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    padding: 7px 16px;
+    border-radius: 999px;
+    font-size: 12.5px;
+    letter-spacing: 0.02em;
+    color: #eee;
+    opacity: 1;
+    pointer-events: none;
+    transition: opacity 0.6s ease;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    z-index: 24;
+  }
+  body.framed #status {
+    position: fixed;
+    left: calc(var(--fx) + var(--frame-w) / 2);
+    top: calc(var(--fy) + var(--molding) + var(--mat-pad) + 12px);
+  }
+  #status.connected { opacity: 0; }
+  #status.takeover {
+    opacity: 1;
+    pointer-events: auto;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+  }
+
+  /* ---- Frame It marquee — fills the picture opening (the live
+     desktop). Aspect-LOCKED selection. UNFRAMED-positioned; in
+     framed mode it would cover the opening but Frame It is only
+     ever armed while UNFRAMED. ---- */
+  #marquee {
+    position: fixed;
+    inset: 0;
+    z-index: 26;
+    pointer-events: none;
+    cursor: crosshair;
+    -webkit-app-region: no-drag;
+  }
+  #marquee.arming {
+    pointer-events: auto;
+    background: rgba(10, 10, 14, 0.28);
+    backdrop-filter: blur(1px);
+    -webkit-backdrop-filter: blur(1px);
+  }
+  #selection {
+    position: fixed;
+    display: none;
+    border: 1.5px solid rgba(255, 180, 90, 0.95);
+    background: rgba(255, 180, 90, 0.12);
+    box-shadow: 0 0 0 100vmax rgba(10, 10, 14, 0.45);
+    border-radius: 6px;
+    z-index: 27;
+    pointer-events: none;
+  }
+  /* a small "16:10" tag riding the selection so the lock is legible */
+  #selection::after {
+    content: attr(data-aspect);
+    position: absolute;
+    top: -22px; left: 0;
+    background: rgba(255,180,90,0.95);
+    color: #2a1810;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+
+  /* tiny brand caption — framed only, lower-left like a gallery plate */
+  #plate {
+    position: fixed;
+    z-index: 20;
+    bottom: 14px; left: 16px;
+    color: rgba(235,225,205,0.65);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.7);
+    user-select: none;
+    display: none;
+    -webkit-app-region: no-drag;
+    /* fade-on-approach: JS drives opacity from the live plate↔fixtures gap;
+       the transition just smooths between discrete resize steps */
+    transition: opacity 0.1s linear;
+  }
+  body.framed #plate {
+    display: block;
+    bottom: auto;
+    left: calc(var(--fx) + var(--molding) + 10px);
+    top: calc(var(--fy) + var(--frame-h) - var(--molding) / 2 - 7px);
+  }
+  #plate b { color: rgba(216,180,131,0.95); font-weight: 600; }
+</style>
+</head>
+<body>
+
+  <!-- ============================================================
+       The feed mount + frame chrome. The #picture (noVNC) is shared
+       across both states; CSS (body.framed) re-homes it.
+       ============================================================ -->
+  <div id="stage">
+    <div id="frame">
+      <!-- four mitered wood rails (framed mode) -->
+      <div class="rail top"></div>
+      <div class="rail bottom"></div>
+      <div class="rail left"></div>
+      <div class="rail right"></div>
+
+      <!-- corner miter seams -->
+      <div class="miter tl"></div>
+      <div class="miter tr"></div>
+      <div class="miter bl"></div>
+      <div class="miter br"></div>
+
+      <!-- corner resize grips (invisible; cursor is the affordance) -->
+      <div class="grip tl"></div>
+      <div class="grip tr"></div>
+      <div class="grip bl"></div>
+      <div class="grip br"></div>
+
+      <!-- cream mat -->
+      <div id="mat">
+        <div id="bevel"></div>
+      </div>
+
+      <!-- brass window fixtures (framed controls) -->
+      <div id="fixtures">
+        <div class="fix gear"  title="Settings"><div class="gl"></div></div>
+        <div class="fix min"   title="Minimize"><div class="gl"></div></div>
+        <div class="fix max"   title="Un-frame (back to full desktop)"><div class="gl"></div></div>
+        <div class="fix close" title="Close"><div class="gl"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- the picture / live feed. Kept OUTSIDE #frame so it is NEVER inside a
+       display:none ancestor — noVNC mounts into a real, sized #screen at load.
+       UNFRAMED: position:fixed inset:0 (full window). FRAMED: CSS re-homes it
+       into the walnut mat opening, with #frame overlaying around it. -->
+  <div id="picture">
+    <div id="screen"></div>
+    <div id="glass"></div>
+
+    <!-- LG SETTINGS PANEL (Phase 3, 2026-07-21) — slides into the picture area -->
+    <div id="lg-settings">
+      <div class="lg-set-head">
+        <div class="lg-set-title">Heartwood · <b>Settings</b></div>
+        <div class="lg-set-close" title="Close settings">&times;</div>
+      </div>
+      <div class="lg-set-body">
+        <div class="lg-sec">
+          <div class="lg-sec-label">🪵 Frame</div>
+          <div class="lg-woods">
+            <div class="lg-wood" data-wood="walnut"><span class="lg-wood-name">Walnut</span></div>
+            <div class="lg-wood" data-wood="oak"><span class="lg-wood-name">Oak</span></div>
+            <div class="lg-wood" data-wood="ebony"><span class="lg-wood-name">Ebony</span></div>
+            <div class="lg-wood" data-wood="barnwood"><span class="lg-wood-name">Barnwood</span></div>
+          </div>
+        </div>
+        <div class="lg-sec">
+          <div class="lg-sec-label">✨ Glass</div>
+          <div class="lg-row">
+            <div class="lg-row-text">
+              <div class="lg-row-name">Reflection sheen</div>
+              <div class="lg-row-sub">The soft light across the glass</div>
+            </div>
+            <div class="lg-toggle on" id="tgl-glass"></div>
+          </div>
+        </div>
+        <div class="lg-sec">
+          <div class="lg-sec-label">🖱 Cursor</div>
+          <div class="lg-row">
+            <div class="lg-row-text">
+              <div class="lg-row-name">Show remote cursor</div>
+              <div class="lg-row-sub">Dot marking the Mac's pointer</div>
+            </div>
+            <div class="lg-toggle on" id="tgl-cursor"></div>
+          </div>
+        </div>
+        <div class="lg-sec">
+          <div class="lg-sec-label">📡 Connection</div>
+          <div class="lg-conn">
+            <div class="lg-conn-line">
+              <span class="k">Status</span>
+              <span class="lg-conn-state">
+                <span class="lg-conn-dot" id="conn-dot"></span>
+                <span class="v" id="conn-state">connecting…</span>
+              </span>
+            </div>
+            <div class="lg-conn-line">
+              <span class="k">Host</span><span class="v" id="conn-host">—</span>
+            </div>
+            <div class="lg-conn-line">
+              <span class="k">Connected for</span><span class="v" id="conn-uptime">—</span>
+            </div>
+            <span class="lg-conn-change" id="conn-change">Change connection…</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FIRST-RUN SETUP — parchment card on the dark stage (Heartwood) -->
+  <div id="firstrun">
+    <div class="fr-card">
+      <div class="fr-title">Heartwood</div>
+      <div class="fr-sub">Hang your first frame</div>
+      <label class="fr-label">Your Mac's address
+        <input id="fr-host" type="text" placeholder="e.g. my-mac.local or 192.168.1.20" spellcheck="false" autocomplete="off">
+      </label>
+      <div class="fr-hint">Hostname or IP. Bridge port defaults to 5902 — append :port to override.</div>
+      <label class="fr-label">Screen Sharing password
+        <input id="fr-pass" type="password" placeholder="••••••••">
+      </label>
+      <div class="fr-err" id="fr-err"></div>
+      <div class="fr-btn" id="fr-go">Hang the frame</div>
+    </div>
+  </div>
+
+  <!-- connection status (shared) -->
+  <div id="status">connecting…</div>
+
+  <!-- UNFRAMED custom chrome -->
+  <div id="uichrome">
+    <div id="frame-it" title="Pick a region to frame">🖼 Frame It</div>
+    <div class="ubtn min"   title="Minimize"></div>
+    <div class="ubtn close" title="Close"></div>
+  </div>
+
+  <!-- Frame It marquee + selection box -->
+  <div id="marquee"></div>
+  <div id="selection" data-aspect="16:10"></div>
+
+  <div id="plate">Heartwood · <b>Walnut Classic</b></div>
+
+<script type="module">
+  import RFB from './novnc/core/rfb.js';
+
+  // ============================================================
+  // Electron loadFile() serves from file:// with no hostname, so
+  // we hardcode the Mac target. Change here if the host moves.
+  // ============================================================
+  // Connection config — loaded from main (heartwood-config.json, password
+  // encrypted at rest). No addresses or secrets live in this file anymore.
+  let MACCFG = null;                     // { host, port, password }
+  const wsUrl = () => 'ws://' + MACCFG.host + ':' + (MACCFG.port || 5902);
+
+  // The Frame It marquee is LOCKED to this aspect ratio. One knob.
+  const FRAME_ASPECT = 16 / 10;
+  // Comfortable framed window width; height derives from FRAME_ASPECT plus
+  // the wood+mat chrome so the PICTURE OPENING lands on FRAME_ASPECT.
+  const FRAME_WIDTH = 720;
+  // Chrome thickness on each axis (must match --molding + --mat-pad * 2 sides).
+  const CHROME = (42 + 26) * 2;   // molding+mat per side, both sides → 136px
+
+  const status    = document.getElementById('status');
+  const target    = document.getElementById('screen');
+  const marquee   = document.getElementById('marquee');
+  const selection = document.getElementById('selection');
+  const frameItBtn= document.getElementById('frame-it');
+
+  const frameEl = document.getElementById('frame');
+
+  let rfb = null;
+
+  // ---- app state machine ---------------------------------------------
+  // mode: 'unframed' | 'framed'   — drives body.framed + which controls.
+  // view: { mode:'fit' } | { mode:'zoom', region } — drives the feed crop.
+  // 'unframed' is always view:fit; 'framed' is always view:zoom.
+  let appMode = 'unframed';
+  let view = { mode: 'fit' };
+
+  // ---- frame geometry (CSS-variable driven; the window never moves) ----
+  // The frame is a positioned CSS object on the full-size transparent stage.
+  // Height always derives from width so the OPENING stays on FRAME_ASPECT.
+  const rootStyle = document.documentElement.style;
+  const FRAME_MIN_W = 380;
+  const frameHFromW = (w) => Math.round((w - CHROME) / FRAME_ASPECT) + CHROME;
+  let frameGeom = { x: 80, y: 80, w: FRAME_WIDTH };
+
+  function maxFrameW() {
+    // Largest width that fits the stage on both axes.
+    return Math.min(
+      window.innerWidth,
+      Math.round((window.innerHeight - CHROME) * FRAME_ASPECT + CHROME)
+    );
+  }
+
+  function setFrameGeom(x, y, w) {
+    w = Math.round(Math.min(Math.max(w, FRAME_MIN_W), maxFrameW()));
+    const h = frameHFromW(w);
+    const KEEP = 48;   // px of wood that must stay reachable on the stage
+    x = Math.min(Math.max(x, KEEP - w), window.innerWidth - KEEP);
+    y = Math.min(Math.max(y, 0), window.innerHeight - KEEP);
+    frameGeom = { x: Math.round(x), y: Math.round(y), w };
+    rootStyle.setProperty('--fx', frameGeom.x + 'px');
+    rootStyle.setProperty('--fy', frameGeom.y + 'px');
+    rootStyle.setProperty('--frame-w', w + 'px');
+    rootStyle.setProperty('--frame-h', h + 'px');
+    // Main hit-tests the cursor against this rect for margin click-through.
+    if (lg.frameRect) lg.frameRect({ x: frameGeom.x, y: frameGeom.y, w, h });
+  }
+
+  const display = () => rfb && rfb._display;
+  const containerSize = () => ({ w: target.clientWidth, h: target.clientHeight });
+
+  function applyFit() {
+    const d = display();
+    if (!d || !d.width) return;
+    // In full-desktop mode, let noVNC own FIT scaling. Its _resize() runs
+    // whenever the server sends DesktopSize/ExtendedDesktopSize — including
+    // the login-screen -> desktop handoff, even when both report the SAME
+    // 3440x1440 dimensions. With scaleViewport=false, that path forcibly
+    // resets Display.scale to 1 and a 1440px canvas overflows our deliberately
+    // one-pixel-shaved 1439px Windows stage, spawning both scrollbars. Keeping
+    // scaleViewport on makes that same server message re-autoscale to 0.9993.
+    if (rfb && !rfb.scaleViewport) rfb.scaleViewport = true;
+    d.clipViewport = false;
+    d.viewportChangeSize(d.width, d.height);
+    const c = containerSize();
+    d.scale = Math.min(c.w / d.width, c.h / d.height);
+  }
+
+  function applyZoom(region) {
+    const d = display();
+    if (!d || !d.width) return;
+    // Framed mode uses our custom crop/viewport math, so hand scale ownership
+    // back to Looking Glass before setting the cropped viewport below.
+    if (rfb && rfb.scaleViewport) rfb.scaleViewport = false;
+    // Clamp the region to the framebuffer.
+    let { x, y, w, h } = region;
+    x = Math.max(0, Math.min(x, d.width - 1));
+    y = Math.max(0, Math.min(y, d.height - 1));
+    w = Math.max(1, Math.min(w, d.width - x));
+    h = Math.max(1, Math.min(h, d.height - y));
+
+    d.clipViewport = true;
+    d.viewportChangeSize(w, h);
+    const vp = d._viewportLoc;
+    d.viewportChangePos(x - vp.x, y - vp.y);
+    const c = containerSize();
+    // Fill the picture opening with the cropped region. The walnut mat IS
+    // the margin now, so no extra inset — the region fills the frame.
+    d.scale = Math.min(c.w / w, c.h / h);
+  }
+
+  function applyView() {
+    if (view.mode === 'zoom') applyZoom(view.region);
+    else applyFit();
+  }
+
+  // ---- zoom-out animation (un-frame) -----------------------------------
+  // The frame crops IN to a region, so leaving it plays the reverse: the
+  // view pulls back from the cropped region to the whole desktop. Pure
+  // view math on the canvas — no window or layout changes involved.
+  let zoomAnimRaf = 0;
+  // One engine, both directions: lerp the picture's on-screen rect AND the
+  // camera's crop region on the same clock. Framing pushes IN, un-framing
+  // pulls back OUT — mirror twins at the same speed.
+  function animateView({ regionFrom, regionTo, rectFrom, rectTo, frameFrom, frameTo, onDone }) {
+    const d = display();
+    const pic = document.getElementById('picture');
+    if (!d || !d.width) { onDone(); return; }
+    const DUR = 520;
+    const t0 = performance.now();
+    const ease = (t) => 1 - Math.pow(1 - t, 3);   // ease-out cubic (gentle landing)
+    cancelAnimationFrame(zoomAnimRaf);
+    const lerp = (a, b, k) => a + (b - a) * k;
+    const step = (now) => {
+      const t = Math.min(1, (now - t0) / DUR);
+      const k = ease(t);
+      if (rectFrom && rectTo) {
+        pic.style.left   = lerp(rectFrom.left,   rectTo.left,   k) + 'px';
+        pic.style.top    = lerp(rectFrom.top,    rectTo.top,    k) + 'px';
+        pic.style.width  = lerp(rectFrom.width,  rectTo.width,  k) + 'px';
+        pic.style.height = lerp(rectFrom.height, rectTo.height, k) + 'px';
+      }
+      // Un-frame: the WOOD stays welded to the growing picture's edges and
+      // is physically pushed off the screen, fading only near the exit.
+      if (frameFrom && frameTo) {
+        rootStyle.setProperty('--fx', lerp(frameFrom.x, frameTo.x, k) + 'px');
+        rootStyle.setProperty('--fy', lerp(frameFrom.y, frameTo.y, k) + 'px');
+        rootStyle.setProperty('--frame-w', lerp(frameFrom.w, frameTo.w, k) + 'px');
+        rootStyle.setProperty('--frame-h', lerp(frameFrom.h, frameTo.h, k) + 'px');
+        frameEl.style.opacity = k < 0.7 ? '1' : String(Math.max(0, 1 - (k - 0.7) / 0.3));
+      }
+      const r = {
+        x: lerp(regionFrom.x, regionTo.x, k),
+        y: lerp(regionFrom.y, regionTo.y, k),
+        w: lerp(regionFrom.w, regionTo.w, k),
+        h: lerp(regionFrom.h, regionTo.h, k),
+      };
+      view = { mode: 'zoom', region: r };   // keep view current so any
+      applyZoom(r);                          // ResizeObserver pass agrees
+      if (t < 1) zoomAnimRaf = requestAnimationFrame(step);
+      else onDone();
+    };
+    zoomAnimRaf = requestAnimationFrame(step);
+  }
+
+  // Map a client (screen) point to a framebuffer coordinate using the current
+  // view — same math noVNC uses internally, so it composes correctly even when
+  // we're already zoomed in.
+  function clientToFb(clientX, clientY) {
+    const d = display();
+    const canvas = rfb._canvas;
+    const r = canvas.getBoundingClientRect();
+    const vp = d._viewportLoc;
+    const fx = Math.round((clientX - r.left) / d._scale + vp.x);
+    const fy = Math.round((clientY - r.top) / d._scale + vp.y);
+    return { x: fx, y: fy };
+  }
+
+  // ---- assembly animation control ------------------------------------
+  // Plays when we enter framed mode (and on each new framed region). The feed
+  // underneath keeps running; only the frame chrome settles around it.
+  function assemble() {
+    frameEl.classList.add('assembling');
+    void frameEl.offsetWidth;   // force reflow so transitions re-fire
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        frameEl.classList.remove('assembling');
+      });
+    });
+  }
+
+  function flashStatus(text, ms = 1600) {
+    status.textContent = text;
+    status.classList.remove('connected');
+    clearTimeout(flashStatus._t);
+    flashStatus._t = setTimeout(() => status.classList.add('connected'), ms);
+  }
+
+  // ====================================================================
+  // STATE TRANSITIONS
+  // ====================================================================
+
+  // FRAME IT: arm the aspect-locked marquee (only meaningful while unframed).
+  let arming = false;
+  let dragStart = null;
+
+  function setArmed(on) {
+    arming = on;
+    marquee.classList.toggle('arming', on);
+    frameItBtn.classList.toggle('armed', on);
+    frameItBtn.textContent = on ? 'drag a box · esc' : '🖼 Frame It';
+    if (!on) { selection.style.display = 'none'; dragStart = null; }
+  }
+
+  frameItBtn.addEventListener('click', () => {
+    if (appMode !== 'unframed') return;
+    if (arming) { setArmed(false); return; }
+    setArmed(true);
+    flashStatus('drag a box — locked to 16:10', 2400);
+  });
+
+  // While arming, the selection box is LOCKED to FRAME_ASPECT: we take the
+  // larger of the dragged width/height and derive the matching other side.
+  function lockedRectFromDrag(sx, sy, cx, cy) {
+    const dx = cx - sx;
+    const dy = cy - sy;
+    let w = Math.abs(dx);
+    let h = Math.abs(dy);
+    // Lock to aspect: grow the box to satisfy FRAME_ASPECT, driven by the
+    // dominant drag axis so it feels natural.
+    if (w / h > FRAME_ASPECT) h = w / FRAME_ASPECT;
+    else w = h * FRAME_ASPECT;
+    // Anchor at the start point; extend in the drag's direction.
+    const left = dx < 0 ? sx - w : sx;
+    const top  = dy < 0 ? sy - h : sy;
+    return { left, top, w, h };
+  }
+
+  marquee.addEventListener('mousedown', (e) => {
+    if (!arming) return;
+    dragStart = { x: e.clientX, y: e.clientY };
+    Object.assign(selection.style, {
+      display: 'block', left: e.clientX + 'px', top: e.clientY + 'px',
+      width: '0px', height: '0px'
+    });
+  });
+
+  marquee.addEventListener('mousemove', (e) => {
+    if (!arming || !dragStart) return;
+    const r = lockedRectFromDrag(dragStart.x, dragStart.y, e.clientX, e.clientY);
+    Object.assign(selection.style, {
+      left: r.left + 'px', top: r.top + 'px',
+      width: r.w + 'px', height: r.h + 'px'
+    });
+  });
+
+  marquee.addEventListener('mouseup', (e) => {
+    if (!arming || !dragStart) return;
+    const r = lockedRectFromDrag(dragStart.x, dragStart.y, e.clientX, e.clientY);
+    setArmed(false);
+    // Ignore stray clicks / tiny drags.
+    if (r.w < 24 || r.h < 24) { flashStatus('framing cancelled'); return; }
+    const a = clientToFb(r.left, r.top);
+    const b = clientToFb(r.left + r.w, r.top + r.h);
+    const region = { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y };
+    enterFramed(region, r);
+  });
+
+  // ENTER FRAMED: hang the CSS frame so its OPENING lands exactly on the
+  // marqueed box, zoom the feed to the region, assemble. Pure CSS — the
+  // window itself never changes.
+  function enterFramed(region, marqueeRect) {
+    cancelAnimationFrame(zoomAnimRaf);   // don't let a running pull-back stomp the new crop
+    appMode = 'framed';
+    const d = display();
+
+    // Frame width = marqueed opening + wood chrome; the opening then shows
+    // the region at roughly the size Mu drew it. Clamped to the stage.
+    const w = Math.round(marqueeRect.w + CHROME);
+    setFrameGeom(marqueeRect.left - CHROME / 2, marqueeRect.top - CHROME / 2, w);
+    // Where the opening will be once the frame hangs (post-clamp geometry).
+    const PAD = CHROME / 2;
+    const toRect = {
+      left:   frameGeom.x + PAD,
+      top:    frameGeom.y + PAD,
+      width:  frameGeom.w - CHROME,
+      height: frameHFromW(frameGeom.w) - CHROME,
+    };
+    const fromRect = { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+
+    // Pin the picture at full stage BEFORE the framed class re-homes it, so
+    // the wood assembles around a picture that's still the whole desktop...
+    const pic = document.getElementById('picture');
+    Object.assign(pic.style, {
+      position: 'fixed', inset: 'auto',
+      left: '0px', top: '0px',
+      width: fromRect.width + 'px', height: fromRect.height + 'px',
+    });
+    document.body.classList.add('framed');
+    updateFeedBg();   // feed letterbox → mat cream while framed
+    requestAnimationFrame(updatePlateFade);   // first gap measure once framed layout lands
+    if (lg.setMode) lg.setMode(true, false);   // main starts cursor polling
+    assemble();
+
+    // ...then the mirror of un-framing: the camera pushes IN to the marqueed
+    // region while the picture shrinks into the arriving frame's opening.
+    if (d && d.width) {
+      animateView({
+        regionFrom: { x: 0, y: 0, w: d.width, h: d.height },
+        regionTo: region,
+        rectFrom: fromRect,
+        rectTo: toRect,
+        onDone: () => {
+          pic.style.cssText = '';            // framed CSS owns the layout now
+          view = { mode: 'zoom', region };
+          applyViewWhenSettled();
+          focusFeed();   // hand keyboard to the live feed so typing reaches the Mac
+          flashStatus('🖼 framed — brass ▢ to go back', 2200);
+        },
+      });
+    } else {
+      pic.style.cssText = '';
+      view = { mode: 'zoom', region };
+      applyViewWhenSettled();
+      focusFeed();
+      flashStatus('🖼 framed — brass ▢ to go back', 2200);
+    }
+  }
+
+  // Give keyboard to the live feed. noVNC's RFB grabs keydown at the canvas
+  // level and also auto-focuses the canvas on mousedown (focusOnClick), so a
+  // click already routes typing to the Mac — but on enter-framed we focus
+  // explicitly so the user can type immediately without a priming click. The
+  // canvas now receives pointer events (pointer-events:auto on #picture), and
+  // nothing above the opening captures keydown, so this is all that's needed.
+  function focusFeed() {
+    try { if (rfb && rfb.focus) rfb.focus({ preventScroll: true }); } catch (_) {}
+  }
+
+  // EXIT FRAMED: play the assembly IN REVERSE — the wood rails slide back out,
+  // the mat/bevel/glass fade — then the feed simply expands to the full stage
+  // via CSS. There is NO OS maximize anymore (the window is already full
+  // size), so the old red-flash moment cannot exist: nothing about the native
+  // window changes, only CSS classes.
+  let exiting = false;
+  function exitFramed() {
+    if (appMode !== 'framed' || exiting) return;
+    exiting = true;
+    appMode = 'unframed';   // logically unframed (Esc/brass won't re-trigger)
+
+    // Play the reverse-assemble. Keep body.framed so the wood stays styled as
+    // it slides away; keep view as the framed zoom so the picture underneath
+    // doesn't snap/refit while the wood is still visible.
+    frameEl.classList.remove('assembling', 'disassembling');
+    if (lg.setMode) lg.setMode(false, false);   // window fully interactive from the first beat
+    clearTimeout(exitFramed._t);
+
+    // MIRROR TWIN of framing, physical version: the picture grows outward
+    // and the wood frame — welded to its edges — is pushed off the screen
+    // with it, fading only as it leaves. One motion, one object.
+    const region = view.mode === 'zoom' ? { ...view.region } : null;
+    const pic = document.getElementById('picture');
+    if (region) {
+      const startRect = pic.getBoundingClientRect();
+      Object.assign(pic.style, {
+        position: 'fixed', inset: 'auto',
+        left: startRect.left + 'px', top: startRect.top + 'px',
+        width: startRect.width + 'px', height: startRect.height + 'px',
+      });
+      applyZoom(region);
+      const d = display();
+      const PAD = CHROME / 2;
+      animateView({
+        regionFrom: region,
+        regionTo: { x: 0, y: 0, w: d ? d.width : region.w, h: d ? d.height : region.h },
+        rectFrom: startRect,
+        rectTo: { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight },
+        frameFrom: { x: frameGeom.x, y: frameGeom.y, w: frameGeom.w, h: frameHFromW(frameGeom.w) },
+        frameTo: {
+          x: -PAD, y: -PAD,
+          w: window.innerWidth + CHROME,
+          h: window.innerHeight + CHROME,
+        },
+        onDone: () => {
+          document.body.classList.remove('framed');
+          updateFeedBg();   // back to black behind the full-desktop feed
+          pic.style.cssText = '';
+          frameEl.style.opacity = '';
+          view = { mode: 'fit' };
+          applyView();
+          flashStatus('🦊 full desktop', 1600);
+          exiting = false;
+        },
+      });
+    } else {
+      document.body.classList.remove('framed');
+      updateFeedBg();   // back to black behind the full-desktop feed
+      view = { mode: 'fit' };
+      applyViewWhenSettled();
+      flashStatus('🦊 full desktop', 1600);
+      exiting = false;
+    }
+  }
+
+  // Re-run applyView() repeatedly until the feed container has a real,
+  // non-zero size that has stopped changing — then once more for safety.
+  // This guards against framing: main resizes the window down to the small
+  // frame, and #picture/#screen only reach their final framed opening size a
+  // few frames later. Calling applyZoom() against a stale/transitional size
+  // scales the noVNC canvas to ~0 (the blank cream-mat bug). We poll the
+  // settled opening size and re-zoom against it.
+  function applyViewWhenSettled(maxFrames = 40) {
+    let last = { w: -1, h: -1 };
+    let stable = 0;
+    let frames = 0;
+    const tick = () => {
+      const c = containerSize();
+      if (c.w > 0 && c.h > 0 && c.w === last.w && c.h === last.h) {
+        stable++;
+      } else {
+        stable = 0;
+      }
+      last = c;
+      applyView();   // re-zoom against whatever the opening currently is
+      frames++;
+      // Two consecutive identical non-zero sizes = settled.
+      if (stable >= 2 || frames >= maxFrames) {
+        // One final pass on the next frame for good measure.
+        requestAnimationFrame(() => {
+          applyView();
+        });
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (arming) { setArmed(false); flashStatus('framing cancelled'); }
+      else if (appMode === 'framed') exitFramed();
+    }
+  });
+
+  // ---- control wiring: both sets → the same window.lg ----------------
+  const lg = window.lg || {};
+
+  // Minimize with a shrink-toward-the-taskbar beat first (the OS skips its
+  // own animation for frameless transparent windows). Restore reverses it.
+  function animatedMinimize() {
+    document.body.classList.add('minimizing');
+    setTimeout(() => { if (lg.minimize) lg.minimize(); }, 180);
+  }
+  if (lg.onRestored) {
+    lg.onRestored(() => document.body.classList.remove('minimizing'));
+  }
+
+  // UNFRAMED chrome buttons
+  document.querySelector('.ubtn.min').addEventListener('click', () => animatedMinimize());
+  document.querySelector('.ubtn.close').addEventListener('click', () => lg.close && lg.close());
+
+  // FRAMED brass fixtures
+  function pulse(el) {
+    el.animate(
+      [{ transform: 'scale(1)' }, { transform: 'scale(0.9)' }, { transform: 'scale(1)' }],
+      { duration: 180, easing: 'ease' }
+    );
+  }
+  document.querySelector('.fix.min').addEventListener('click', (e) => {
+    pulse(e.currentTarget); animatedMinimize();
+  });
+  // brass MAX un-frames back to the full desktop.
+  document.querySelector('.fix.max').addEventListener('click', (e) => {
+    pulse(e.currentTarget); exitFramed();
+  });
+  document.querySelector('.fix.close').addEventListener('click', (e) => {
+    pulse(e.currentTarget); lg.close && lg.close();
+  });
+
+  // ============================================================
+  // LG SETTINGS (Phase 3, 2026-07-21) — gear toggles the panel;
+  // prefs persist in localStorage. Sections wire in later checkpoints.
+  // ============================================================
+  const LG_PREFS_KEY = 'lg.prefs.v1';
+  function lgPrefs() {
+    try { return JSON.parse(localStorage.getItem(LG_PREFS_KEY)) || {}; }
+    catch (_) { return {}; }
+  }
+  function lgSetPref(key, val) {
+    const p = lgPrefs(); p[key] = val;
+    try { localStorage.setItem(LG_PREFS_KEY, JSON.stringify(p)); } catch (_) {}
+  }
+  function openSettings()  { document.body.classList.add('settings-open'); }
+  function closeSettings() { document.body.classList.remove('settings-open'); }
+  function toggleSettings(){ document.body.classList.toggle('settings-open'); }
+
+  document.querySelector('.fix.gear').addEventListener('click', (e) => {
+    pulse(e.currentTarget); toggleSettings();
+  });
+  document.querySelector('#lg-settings .lg-set-close').addEventListener('click', () => closeSettings());
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.body.classList.contains('settings-open')) {
+      e.stopPropagation(); closeSettings();
+    }
+  }, true);
+
+  // ---- FRAME SHOP: the four woods (Phase 3 §2) ----
+  const WOODS = {
+    walnut:   'Walnut Classic',
+    oak:      'Oak Modern',
+    ebony:    'Ebony Gallery',
+    barnwood: 'Barnwood Rustic',
+  };
+  const plateEl = document.getElementById('plate');
+  // noVNC paints its OWN background color around the clipped feed (rfb.background,
+  // set at connect to #0a0a0e). That black is what shows as the hairline when the
+  // opening's aspect drifts per wood. Match it to the mat cream when framed so any
+  // sliver blends into the mat; keep it black unframed (full desktop). (2026-07-21 §2)
+  function updateFeedBg() {
+    if (!rfb) return;
+    if (document.body.classList.contains('framed')) {
+      const mat = getComputedStyle(document.body).getPropertyValue('--mat-base').trim();
+      rfb.background = mat || '#efe7d6';
+    } else {
+      rfb.background = '#0a0a0e';
+    }
+  }
+  function applyWood(name, persist = true) {
+    if (!WOODS[name]) name = 'walnut';
+    for (const w of Object.keys(WOODS)) document.body.classList.remove('wood-' + w);
+    document.body.classList.add('wood-' + name);
+    document.querySelectorAll('.lg-wood').forEach(el =>
+      el.classList.toggle('active', el.dataset.wood === name));
+    if (plateEl) plateEl.innerHTML = 'Heartwood · <b>' + WOODS[name] + '</b>';
+    if (persist) lgSetPref('wood', name);
+    updateFeedBg();
+    updatePlateFade();  // plate width + molding changed → re-measure the gap
+  }
+  document.querySelectorAll('.lg-wood').forEach(el =>
+    el.addEventListener('click', () => applyWood(el.dataset.wood)));
+  // restore saved wood on load (default walnut)
+  applyWood(lgPrefs().wood || 'walnut', false);
+
+  // ---- plate fade-on-approach (ship polish, 2026-07-21) ----------------
+  // The plate rides the LEFT of the bottom rail; the fixtures ride CENTER.
+  // Drag the frame narrow enough and they'd collide — so as the fixtures
+  // close in, the plate yields: opacity ramps down across the approach and
+  // hits 0 while there's still a sliver of gap, so text and brass never
+  // actually touch. Driven directly by the live gap (window resizes fire
+  // continuously during a grip drag), so the fade tracks the drag itself.
+  const PLATE_GAP_GONE = 10;  // px gap at which the plate is fully invisible
+  const PLATE_GAP_FULL = 34;  // px gap at which it's fully back
+  function updatePlateFade() {
+    if (!plateEl) return;
+    if (!document.body.classList.contains('framed')) {
+      plateEl.style.opacity = '';   // unframed: plate is display:none anyway
+      return;
+    }
+    const gap = document.getElementById('fixtures').getBoundingClientRect().left
+              - plateEl.getBoundingClientRect().right;
+    const t = (gap - PLATE_GAP_GONE) / (PLATE_GAP_FULL - PLATE_GAP_GONE);
+    plateEl.style.opacity = Math.max(0, Math.min(1, t)).toFixed(3);
+  }
+  // The grips resize the frame by writing --frame-w/--frame-h CSS vars — the
+  // WINDOW never resizes, so a window 'resize' listener sleeps through the
+  // whole drag (found live 2026-07-21). Observe the frame's actual box.
+  new ResizeObserver(updatePlateFade).observe(document.getElementById('frame'));
+
+  // ---- SETTINGS §3-5: glass toggle · cursor toggle · connection view ---
+  // Both toggles default ON (matching pre-settings behavior); prefs store
+  // false only when deliberately switched off, so absent pref = on.
+  const tglGlass  = document.getElementById('tgl-glass');
+  const tglCursor = document.getElementById('tgl-cursor');
+
+  function applyGlass(on, persist = true) {
+    document.body.classList.toggle('no-glass', !on);
+    tglGlass.classList.toggle('on', on);
+    if (persist) lgSetPref('glass', on);
+  }
+  function applyCursor(on, persist = true) {
+    tglCursor.classList.toggle('on', on);
+    // live-flip on the current connection; connect() also reads the pref
+    // so the choice survives reconnects
+    try { if (rfb) rfb.showDotCursor = on; } catch (_) {}
+    if (persist) lgSetPref('cursor', on);
+  }
+  tglGlass.addEventListener('click',  () => applyGlass(!tglGlass.classList.contains('on')));
+  tglCursor.addEventListener('click', () => applyCursor(!tglCursor.classList.contains('on')));
+  applyGlass(lgPrefs().glass !== false, false);
+  applyCursor(lgPrefs().cursor !== false, false);
+
+  // Connection view — a read-only listener on the lifecycle the app
+  // already runs. Host is static; state + uptime update from events.
+  const connDot    = document.getElementById('conn-dot');
+  const connState  = document.getElementById('conn-state');
+  const connUptime = document.getElementById('conn-uptime');
+  // conn-host fills in at boot once config is loaded (see boot()).
+
+  function setConnView(state) {   // 'ok' | 'warn'
+    connDot.className = 'lg-conn-dot ' + state;
+    connState.textContent = state === 'ok' ? 'connected' : 'reconnecting…';
+  }
+  setInterval(() => {
+    if (!document.body.classList.contains('settings-open')) return;
+    if (!connectedAt || !connDot.classList.contains('ok')) {
+      connUptime.textContent = '—';
+      return;
+    }
+    const s = Math.floor((Date.now() - connectedAt) / 1000);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    connUptime.textContent =
+      h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
+  }, 1000);
+
+  // ---- FRAMED: drag the frame by grabbing the WOOD ---------------------
+  // The frame is CSS now, so dragging is just updating --fx/--fy. Listeners
+  // are bound ONLY to the four rails and the mat — never the feed opening
+  // (#picture/#screen) or the brass (#fixtures) — so feed clicks/typing and
+  // brass clicks are untouched. The mat's clip-path punches a transparent
+  // hole at the opening, so its hit-area is only the cream band.
+  const woodGrabEls = [
+    ...document.querySelectorAll('.rail'),
+    document.getElementById('mat'),
+  ].filter(Boolean);
+
+  let woodDragging = false;
+  let dragOff = null;         // frame top-left minus mousedown point
+  let pendingMove = null;     // latest {x,y} awaiting an animation frame
+  let moveRaf = 0;
+
+  function flushMove() {
+    moveRaf = 0;
+    if (!woodDragging || !pendingMove) return;
+    setFrameGeom(pendingMove.x + dragOff.x, pendingMove.y + dragOff.y, frameGeom.w);
+    pendingMove = null;
+  }
+
+  function onWoodMouseMove(e) {
+    if (!woodDragging) return;
+    pendingMove = { x: e.clientX, y: e.clientY };
+    if (!moveRaf) moveRaf = requestAnimationFrame(flushMove);
+  }
+
+  function onWoodMouseUp() {
+    if (!woodDragging) return;
+    woodDragging = false;
+    if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = 0; }
+    pendingMove = null;
+    document.removeEventListener('mousemove', onWoodMouseMove, true);
+    document.removeEventListener('mouseup', onWoodMouseUp, true);
+    woodGrabEls.forEach((el) => el.classList.remove('lg-grabbing'));
+    if (lg.setMode) lg.setMode(appMode === 'framed', false);
+  }
+
+  woodGrabEls.forEach((el) => {
+    el.addEventListener('mousedown', (e) => {
+      // Only drag from the wood, only while framed, only left button.
+      if (appMode !== 'framed' || e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      woodDragging = true;
+      if (lg.setMode) lg.setMode(true, true);   // hold interactive during drag
+      dragOff = { x: frameGeom.x - e.clientX, y: frameGeom.y - e.clientY };
+      el.classList.add('lg-grabbing');
+      document.addEventListener('mousemove', onWoodMouseMove, true);
+      document.addEventListener('mouseup', onWoodMouseUp, true);
+    });
+  });
+
+  // ---- FRAMED: proportional resize from any corner grip -----------------
+  // Aspect is locked by construction: setFrameGeom derives height from
+  // width, and the feed re-zooms automatically (the ResizeObserver on the
+  // opening re-runs applyView on every geometry change).
+  let resizing = null;   // { left, top, ax, ay } — anchor = the OPPOSITE corner
+  let pendingResize = null;
+  let resizeRaf = 0;
+
+  function flushResize() {
+    resizeRaf = 0;
+    if (!resizing || !pendingResize) return;
+    const { ax, ay } = resizing;
+    // Width candidates from both drag axes; the larger wins so the frame
+    // tracks whichever direction the hand is actually pulling.
+    const wFromX = Math.abs(pendingResize.x - ax);
+    const wFromY = (Math.abs(pendingResize.y - ay) - CHROME) * FRAME_ASPECT + CHROME;
+    let w = Math.max(wFromX, wFromY, FRAME_MIN_W);
+    // Keep the frame on the stage relative to its fixed anchor corner.
+    const boundX = resizing.left ? ax : window.innerWidth - ax;
+    const boundH = resizing.top ? ay : window.innerHeight - ay;
+    w = Math.min(w, boundX, (boundH - CHROME) * FRAME_ASPECT + CHROME, maxFrameW());
+    const h = frameHFromW(Math.round(w));
+    setFrameGeom(resizing.left ? ax - w : ax, resizing.top ? ay - h : ay, w);
+    pendingResize = null;
+  }
+
+  function onGripMouseMove(e) {
+    if (!resizing) return;
+    pendingResize = { x: e.clientX, y: e.clientY };
+    if (!resizeRaf) resizeRaf = requestAnimationFrame(flushResize);
+  }
+
+  function onGripMouseUp() {
+    if (!resizing) return;
+    resizing = null;
+    if (resizeRaf) { cancelAnimationFrame(resizeRaf); resizeRaf = 0; }
+    pendingResize = null;
+    document.removeEventListener('mousemove', onGripMouseMove, true);
+    document.removeEventListener('mouseup', onGripMouseUp, true);
+    if (lg.setMode) lg.setMode(appMode === 'framed', false);
+  }
+
+  document.querySelectorAll('.grip').forEach((el) => {
+    el.addEventListener('mousedown', (e) => {
+      if (appMode !== 'framed' || e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const h = frameHFromW(frameGeom.w);
+      const left = el.classList.contains('tl') || el.classList.contains('bl');
+      const top  = el.classList.contains('tl') || el.classList.contains('tr');
+      resizing = {
+        left, top,
+        ax: left ? frameGeom.x + frameGeom.w : frameGeom.x,   // fixed corner x
+        ay: top  ? frameGeom.y + h           : frameGeom.y,   // fixed corner y
+      };
+      if (lg.setMode) lg.setMode(true, true);   // hold interactive during resize
+      document.addEventListener('mousemove', onGripMouseMove, true);
+      document.addEventListener('mouseup', onGripMouseUp, true);
+    });
+  });
+
+  // ---- click-through is owned by MAIN (native cursor polling) -----------
+  // The renderer only reports mode + geometry (lg.setMode / lg.frameRect).
+  // No forwarded-event dependency: main polls the real cursor position, so
+  // pass-through can never get stuck the way forward:true events can on
+  // Windows transparent windows.
+
+  // PANIC RESET (Ctrl+Alt+G): main has already forced the window interactive
+  // and focused — drop the renderer back to the safe unframed state.
+  if (lg.onPanicReset) {
+    lg.onPanicReset(() => {
+      clearTimeout(exitFramed._t);
+      cancelAnimationFrame(zoomAnimRaf);
+      document.getElementById('picture').style.cssText = '';
+      document.body.classList.remove('minimizing');
+      frameEl.style.opacity = '';
+      exiting = false;
+      appMode = 'unframed';
+      view = { mode: 'fit' };
+      setArmed(false);
+      document.body.classList.remove('framed');
+      frameEl.classList.remove('assembling', 'disassembling');
+      applyViewWhenSettled();
+      flashStatus('🦊 reset — full desktop', 1800);
+    });
+  }
+
+  // ---- connection lifecycle + auto-reconnect -------------------------
+  let layoutOwned = false;
+  let reconnectTimer = null;
+  let fbSizeObserver = null;   // watches the canvas fb-size attributes (resolution swaps)
+  let reconnectDelay = 1000;
+  let connectedAt = 0;
+  let quickDrops = 0;
+  let fatal = false;
+  // Never-connected streak (vs quickDrops, which counts connected-then-died):
+  // a wrong password / sleeping Mac / bad address loops on "reconnecting…"
+  // forever without EVER firing 'connect'. After a few straight misses the
+  // setup card surfaces on its own (Mu's UX call, 2026-07-21) — and auto-
+  // dismisses if a background retry lands, so transient outages never
+  // wrongly demand re-setup.
+  let sawConnect = false;      // did THIS attempt reach 'connect'?
+  let failStreak = 0;          // consecutive attempts that never connected
+  let cardAutoShown = false;   // card opened by the streak, not the user
+  const RECONNECT_MAX = 5000;
+  const QUICK_LIFE = 4000;
+  const QUICK_LIMIT = 3;
+
+  function connect() {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    sawConnect = false;
+    status.classList.remove('takeover');
+    target.replaceChildren();   // clear any canvas left by a prior connection
+    rfb = new RFB(target, wsUrl(), { credentials: { password: MACCFG.password } });
+    // Start in the ownership mode of the view being restored. Usually this is
+    // full-desktop FIT; a reconnect while framed correctly starts manual.
+    rfb.scaleViewport = view.mode === 'fit';
+    rfb.clipViewport = false;
+    rfb.resizeSession = false;
+    rfb.background = '#0a0a0e';
+    // macOS renders the pointer INTO the stream and sends an empty local
+    // cursor — so noVNC hides yours and you can lose track of the mouse
+    // entirely (especially if the feed ever stalls). The dot marks it.
+    // Settings §4: honor the saved preference (default on).
+    rfb.showDotCursor = lgPrefs().cursor !== false;
+    // LAN mode: both machines hardwired on one router — spend bandwidth to
+    // buy latency. Max image quality, no compression CPU on either end.
+    rfb.qualityLevel = 9;
+    rfb.compressionLevel = 0;
+
+    rfb.addEventListener('connect', () => {
+      connectedAt = Date.now();
+      reconnectDelay = 1000;
+      sawConnect = true;
+      failStreak = 0;
+      if (cardAutoShown) {   // it was just a blip — withdraw the card
+        document.body.classList.remove('firstrun');
+        cardAutoShown = false;
+      }
+      status.textContent = '🦊 looking through';
+      status.classList.add('connected');
+      setConnView('ok');
+      console.log('LG-DEBUG VNC CONNECTED');
+      setTimeout(() => {
+        try {
+          const cur = getComputedStyle(rfb._canvas).cursor;
+          console.log('LG-DEBUG canvas cursor 3s after connect:',
+                      cur.length > 60 ? cur.slice(0, 60) + '…(remote cursor image)' : cur);
+        } catch (e) { console.log('LG-DEBUG cursor probe failed:', e.message); }
+      }, 3000);
+      // Take over layout. noVNC's own ResizeObserver re-asserts scale=1 /
+      // no-clip on a deferred frame after every layout change, stomping our
+      // manual zoom. Disconnect this connection's observer every time; install
+      // our own only once so reconnects don't stack observers.
+      if (rfb._resizeObserver) rfb._resizeObserver.disconnect();
+      if (!layoutOwned) {
+        new ResizeObserver(() => applyView()).observe(target);
+        layoutOwned = true;
+      }
+      // noVNC writes the canvas width/height ATTRIBUTES on a real framebuffer
+      // resolution change (zoom/animations only touch CSS). Full-desktop fit
+      // is already protected by scaleViewport ownership above, including
+      // same-size login→desktop messages; this observer additionally re-runs
+      // our custom crop when dimensions genuinely change while framed.
+      // Re-attach per connection: each connect builds a fresh canvas.
+      if (fbSizeObserver) fbSizeObserver.disconnect();
+      fbSizeObserver = new MutationObserver(() => {
+        applyViewWhenSettled();
+      });
+      fbSizeObserver.observe(rfb._canvas,
+        { attributes: true, attributeFilter: ['width', 'height'] });
+      applyView();
+      requestAnimationFrame(() => applyView());
+    });
+
+    rfb.addEventListener('disconnect', () => {
+      status.classList.remove('connected');
+      setConnView('warn');
+      console.log('LG-DEBUG VNC DISCONNECTED after', Date.now() - connectedAt, 'ms; quickDrops=', quickDrops);
+      if (fatal) return;
+      if (!sawConnect) {
+        failStreak++;
+        if (failStreak >= 4 && !document.body.classList.contains('firstrun')) {
+          cardAutoShown = true;
+          showFirstRun("Can't reach the Mac — is it awake? Check the address " +
+                       "and password below. Retrying in the background…");
+        }
+        // fall through: keep the reconnect loop alive behind the card
+      }
+      quickDrops = (Date.now() - connectedAt < QUICK_LIFE) ? quickDrops + 1 : 0;
+      if (quickDrops >= QUICK_LIMIT) {
+        console.log('LG-DEBUG TAKEOVER PILL SHOWN (another window owns the screen)');
+        status.textContent = '👆 another window has the screen — tap to take over';
+        status.classList.add('takeover');
+        return;
+      }
+      status.textContent = 'reconnecting…';
+      reconnectTimer = setTimeout(connect, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 1.5, RECONNECT_MAX);
+    });
+
+    rfb.addEventListener('credentialsrequired', () => {
+      fatal = true;
+      cardAutoShown = false;   // user must act — card stays until they do
+      showFirstRun('The Mac asked for a password — enter it to continue.');
+    });
+    rfb.addEventListener('securityfailure', (e) => {
+      fatal = true;
+      cardAutoShown = false;
+      showFirstRun('The Mac refused that password — try again.' +
+                   (e.detail && e.detail.reason ? ' (' + e.detail.reason + ')' : ''));
+    });
+  }
+
+  // Tapping the takeover prompt reclaims the screen from another window.
+  status.addEventListener('click', () => {
+    if (!status.classList.contains('takeover')) return;
+    quickDrops = 0;
+    reconnectDelay = 1000;
+    status.textContent = 'connecting…';
+    connect();
+  });
+
+  // ---- FIRST-RUN SETUP + BOOT (Heartwood, 2026-07-21) ------------------
+  // Config lives with main (password encrypted at rest). No config → the
+  // "hang your first frame" card; wrong password → same card with a note.
+  const frHost = document.getElementById('fr-host');
+  const frPass = document.getElementById('fr-pass');
+  const frErr  = document.getElementById('fr-err');
+
+  function showFirstRun(msg) {
+    if (MACCFG && MACCFG.host) {
+      frHost.value = MACCFG.host +
+        (MACCFG.port && MACCFG.port !== 5902 ? ':' + MACCFG.port : '');
+    }
+    frErr.textContent = msg || '';
+    document.body.classList.add('firstrun');
+    setTimeout(() => (frHost.value ? frPass : frHost).focus(), 60);
+  }
+
+  async function saveFirstRun() {
+    const hostRaw = frHost.value.trim();
+    if (!hostRaw) { frErr.textContent = "Enter your Mac's address."; return; }
+    let host = hostRaw.replace(/^wss?:\/\//, '').replace(/\/+$/, '');
+    let port = 5902;
+    const m = host.match(/^(.*):(\d+)$/);
+    if (m) { host = m[1]; port = parseInt(m[2], 10); }
+    // Blank password + an existing saved one = keep the saved password
+    // (lets you fix a typo'd address without re-typing the password).
+    const password = frPass.value || (MACCFG && MACCFG.password) || '';
+    if (!password) { frErr.textContent = 'Enter the Screen Sharing password.'; return; }
+    if (!window.lg || !lg.setConfig) { frErr.textContent = 'Config bridge unavailable.'; return; }
+    frErr.textContent = '';
+    const ok = await lg.setConfig({ host, port, password });
+    if (!ok) { frErr.textContent = 'Could not save — see lg-debug.log.'; return; }
+    MACCFG = { host, port, password };
+    frPass.value = '';
+    document.body.classList.remove('firstrun');
+    document.getElementById('conn-host').textContent = host + ':' + port;
+    fatal = false; quickDrops = 0; reconnectDelay = 1000;
+    failStreak = 0; cardAutoShown = false;
+    status.textContent = 'connecting…';
+    connect();
+  }
+
+  document.getElementById('fr-go').addEventListener('click', saveFirstRun);
+  [frHost, frPass].forEach(el => el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveFirstRun();
+  }));
+  // Settings → Connection → "Change connection…" reopens the same card.
+  document.getElementById('conn-change').addEventListener('click', () => {
+    closeSettings();
+    cardAutoShown = false;   // user-opened — stays until they act
+    showFirstRun('');
+  });
+
+  async function boot() {
+    MACCFG = (window.lg && lg.getConfig) ? await lg.getConfig() : null;
+    if (!MACCFG || !MACCFG.host || !MACCFG.password) {
+      status.textContent = '';
+      showFirstRun('');
+      return;
+    }
+    document.getElementById('conn-host').textContent =
+      MACCFG.host + ':' + (MACCFG.port || 5902);
+    connect();
+  }
+  boot();
+
+  // ---- temporary diagnostics (read via lg-debug.log on the PC) ----------
+  console.log('LG-DEBUG renderer alive; inner=', window.innerWidth, 'x', window.innerHeight);
+  window.addEventListener('error', (e) => console.log('LG-DEBUG window error:', e.message));
+  let sawMove = false;
+  document.addEventListener('mousemove', (e) => {
+    if (!sawMove) { sawMove = true; console.log('LG-DEBUG first mousemove at', e.clientX, e.clientY); }
+  }, true);
+  document.addEventListener('mousedown', (e) => {
+    console.log('LG-DEBUG mousedown at', e.clientX, e.clientY, 'on', e.target.id || e.target.tagName);
+  }, true);
+</script>
+</body>
+</html>

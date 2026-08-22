@@ -1,0 +1,36 @@
+{
+  "name": "heartwood-vnc",
+  "productName": "Heartwood VNC",
+  "version": "1.0.0",
+  "description": "Heartwood VNC \u2014 your Mac, framed on your PC. A living window in handcrafted wood.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "38.2.2",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.mugenstyles.heartwood-vnc",
+    "productName": "Heartwood VNC",
+    "files": [
+      "index.html",
+      "main.js",
+      "preload.js",
+      "novnc/**"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "portable": {
+      "artifactName": "HeartwoodVNC-${version}.exe"
+    }
+  },
+  "author": "Mugen Styles & Miru Sou",
+  "license": "MIT"
+}
