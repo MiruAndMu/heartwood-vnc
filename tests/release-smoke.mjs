@@ -29,6 +29,8 @@ assert.match(setup, /HEARTWOOD_AGENT_SUFFIX/);
 assert.match(setup, /HEARTWOOD_HOME_OVERRIDE/);
 assert.match(setup, /HEARTWOOD_AGENTS_OVERRIDE/);
 assert.match(setup, /Port :\$port is already in use/);
+assert.doesNotMatch(setup, /nc -z localhost/);
+assert.match(setup, /"127\.0\.0\.1:\$BRIDGE_PORT"/);
 assert.doesNotMatch(main, /passwordPlain/);
 assert.match(main, /safeStorage\.isEncryptionAvailable\(\)/);
 assert.match(main, /heartwood-debug\.log/);
@@ -37,4 +39,4 @@ assert.doesNotMatch(main, /lg-debug\.log/);
 assert.match(readme, /bash ~\/Downloads\/heartwood-mac-setup\.sh/);
 assert.match(readme, /bash mac-setup\/heartwood-mac-setup\.sh/);
 
-console.log('release smoke: 22 assertions passed');
+console.log('release smoke: 24 assertions passed');

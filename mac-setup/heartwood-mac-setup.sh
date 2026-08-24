@@ -62,9 +62,9 @@ if [[ "${1:-}" == "--status" ]]; then
   say "Heartwood on this Mac:"
   agent_running "$LABEL_BRIDGE" && ok "bridge agent running" || warn "bridge agent not running"
   agent_running "$LABEL_WS" && ok "websockify agent running" || warn "websockify agent not running"
-  nc -z localhost "$VNC_PORT" 2>/dev/null && ok "Screen Sharing answering on :$VNC_PORT" || warn "nothing on :$VNC_PORT — Screen Sharing off?"
-  nc -z localhost "$BRIDGE_PORT" 2>/dev/null && ok "bridge answering on :$BRIDGE_PORT" || warn "bridge not answering on :$BRIDGE_PORT"
-  nc -z localhost "$WS_PORT" 2>/dev/null && ok "websockify answering on :$WS_PORT" || warn "websockify not answering on :$WS_PORT"
+  nc -z 127.0.0.1 "$VNC_PORT" 2>/dev/null && ok "Screen Sharing answering on :$VNC_PORT" || warn "nothing on :$VNC_PORT — Screen Sharing off?"
+  nc -z 127.0.0.1 "$BRIDGE_PORT" 2>/dev/null && ok "bridge answering on :$BRIDGE_PORT" || warn "bridge not answering on :$BRIDGE_PORT"
+  nc -z 127.0.0.1 "$WS_PORT" 2>/dev/null && ok "websockify answering on :$WS_PORT" || warn "websockify not answering on :$WS_PORT"
   say ""
   say "Your Mac's address for the Heartwood app:  $(hostname -s).local"
   exit 0
@@ -86,7 +86,7 @@ fi
 ok "macOS + python3 present"
 
 # 2. Screen Sharing on?
-if ! nc -z localhost "$VNC_PORT" 2>/dev/null; then
+if ! nc -z 127.0.0.1 "$VNC_PORT" 2>/dev/null; then
   say ""
   warn "Screen Sharing is OFF (nothing answering on :$VNC_PORT)."
   say ""
@@ -321,15 +321,15 @@ write_plist() {
 }
 
 write_plist "$LABEL_BRIDGE" "$HW_HOME/venv/bin/python3" "$HW_HOME/vnc-bridge.py" "$BRIDGE_PORT" "$VNC_PORT"
-write_plist "$LABEL_WS" "$HW_HOME/venv/bin/websockify" "$WS_PORT" "localhost:$BRIDGE_PORT"
+write_plist "$LABEL_WS" "$HW_HOME/venv/bin/websockify" "$WS_PORT" "127.0.0.1:$BRIDGE_PORT"
 ok "launch agents installed (auto-start on every boot)"
 
 # 7. Verify the chain end to end
 sleep 2
 agent_running "$LABEL_BRIDGE" || die "bridge agent failed to stay running — see $HW_HOME/logs/"
 agent_running "$LABEL_WS" || die "websockify agent failed to stay running — see $HW_HOME/logs/"
-nc -z localhost "$BRIDGE_PORT" 2>/dev/null || die "bridge didn't come up on :$BRIDGE_PORT — see $HW_HOME/logs/"
-nc -z localhost "$WS_PORT" 2>/dev/null || die "websockify didn't come up on :$WS_PORT — see $HW_HOME/logs/"
+nc -z 127.0.0.1 "$BRIDGE_PORT" 2>/dev/null || die "bridge didn't come up on :$BRIDGE_PORT — see $HW_HOME/logs/"
+nc -z 127.0.0.1 "$WS_PORT" 2>/dev/null || die "websockify didn't come up on :$WS_PORT — see $HW_HOME/logs/"
 ok "relay chain is up  (:$WS_PORT → :$BRIDGE_PORT → :$VNC_PORT)"
 
 say ""
