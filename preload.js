@@ -1,4 +1,4 @@
-// Looking Glass — preload bridge (full-size stage architecture).
+// Heartwood VNC — preload bridge (full-size stage architecture).
 //
 // The window never resizes or moves; frame geometry is pure CSS in the
 // renderer. Main owns click-through via native cursor polling — the renderer

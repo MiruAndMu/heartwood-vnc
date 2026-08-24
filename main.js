@@ -1,4 +1,4 @@
-// Looking Glass — Electron main process (full-size stage architecture).
+// Heartwood VNC — Electron main process (full-size stage architecture).
 //
 // THE WINDOW NEVER RESIZES. It is created once at the display's work-area
 // size and stays there for its whole life. The OS never maximizes, restores,
@@ -22,7 +22,7 @@ let win = null;
 let tray = null;
 
 // ---- debug log (the flight recorder) ---------------------------------------
-// Dev (npm start): next to main.js, readable over SSH at looking-glass-app/.
+// Dev (npm start): next to main.js.
 // Packaged: __dirname is inside the read-only app archive, so the log moves
 // to userData (%APPDATA%/heartwood-vnc/) — otherwise it dies silently.
 let LOG = null;
@@ -31,7 +31,7 @@ function dlog(...a) {
     if (!LOG) {
       const dir = app.isPackaged ? app.getPath('userData') : __dirname;
       fs.mkdirSync(dir, { recursive: true });
-      LOG = path.join(dir, 'lg-debug.log');
+      LOG = path.join(dir, 'heartwood-debug.log');
     }
     fs.appendFileSync(LOG, new Date().toISOString() + ' ' + a.join(' ') + '\n');
   } catch (_) {}
@@ -72,9 +72,15 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
+      sandbox: true,
     },
   });
 
+  // This is a local, single-document app. Remote navigation, popups, and
+  // permission prompts are never part of Heartwood's operation.
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (event) => event.preventDefault());
+  win.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   win.loadFile('index.html');
 
   win.once('ready-to-show', () => {
@@ -168,12 +174,8 @@ function configPath() {
 ipcMain.handle('lg-config-get', () => {
   try {
     const raw = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
-    let password = null;
-    if (raw.passwordEnc) {
-      password = safeStorage.decryptString(Buffer.from(raw.passwordEnc, 'base64'));
-    } else if (raw.passwordPlain) {
-      password = raw.passwordPlain;   // fallback path (encryption unavailable)
-    }
+    if (!raw.passwordEnc) return null;
+    const password = safeStorage.decryptString(Buffer.from(raw.passwordEnc, 'base64'));
     if (!raw.host || !password) return null;
     return { host: raw.host, port: raw.port || 5902, password };
   } catch (_) { return null; }        // no config yet → first run
@@ -181,17 +183,27 @@ ipcMain.handle('lg-config-get', () => {
 
 ipcMain.handle('lg-config-set', (_e, cfg) => {
   try {
-    const rec = { host: String(cfg.host), port: Number(cfg.port) || 5902 };
-    if (safeStorage.isEncryptionAvailable()) {
-      rec.passwordEnc = safeStorage.encryptString(String(cfg.password)).toString('base64');
-    } else {
-      rec.passwordPlain = String(cfg.password);
-      dlog('CONFIG WARNING: safeStorage unavailable — password stored unencrypted');
+    const host = String(cfg && cfg.host || '').trim();
+    const port = Number(cfg && cfg.port || 5902);
+    const password = String(cfg && cfg.password || '');
+    if (!host || host.length > 253 || /[^A-Za-z0-9._-]/.test(host) ||
+        !Number.isInteger(port) || port < 1 || port > 65535 || !password) {
+      dlog('CONFIG rejected: invalid host, port, or empty password');
+      return false;
     }
+    if (!safeStorage.isEncryptionAvailable()) {
+      dlog('CONFIG rejected: safeStorage encryption unavailable');
+      return false;
+    }
+    const rec = {
+      host,
+      port,
+      passwordEnc: safeStorage.encryptString(password).toString('base64'),
+    };
     fs.mkdirSync(path.dirname(configPath()), { recursive: true });
     fs.writeFileSync(configPath(), JSON.stringify(rec));
     dlog('CONFIG saved: host=', rec.host, 'port=', rec.port,
-         'enc=', rec.passwordEnc ? 'yes' : 'NO');
+         'enc=yes');
     return true;
   } catch (e) { dlog('CONFIG save failed:', String(e)); return false; }
 });
@@ -203,7 +215,7 @@ ipcMain.on('lg-close', () => { app.quit(); });
 
 // ---- tray icon: the heart-rings mark, embedded as PNG ----------------------
 // (Was a generated SVG data-URL — Electron's Windows tray renders SVG as
-// BLANK, which sat unnoticed since June until Mu's product-eyes caught it
+  // BLANK, discovered during Windows tray testing
 // the night the real icon shipped, 2026-07-21. PNG is embedded so there's
 // no dev-vs-packaged path difference.)
 function buildTrayIcon() {
@@ -253,7 +265,7 @@ app.whenReady().then(() => {
 
   // PANIC KEY: if pass-through ever gets stuck, Ctrl+Alt+L forces the window
   // interactive and focused again, from anywhere, regardless of mouse state.
-  // (Ctrl+Alt+G was the first pick — Google Drive owns it on Mu's PC.)
+  // (Ctrl+Alt+G was the first pick, but conflicts with Google Drive.)
   globalShortcut.register('Control+Alt+L', () => {
     if (!win) return;
     framedOn = false;

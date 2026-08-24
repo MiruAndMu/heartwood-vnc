@@ -29,13 +29,15 @@ your Mac.
 
 ## Requirements
 
-- A **Windows PC** (the viewer) and a **Mac** (the viewed).
+- A **Windows 10/11 x64 PC** (the viewer) and a **Mac** (the viewed).
 - Both on the **same network** — home LAN or the same
   [Tailscale](https://tailscale.com) tailnet.
-- That's it. No accounts, no cloud, no subscription. Your screen never
-  leaves your network.
+- Python 3 on the Mac (`python3 --version`). If it is missing, the setup
+  script explains how to install Apple's command-line developer tools first.
+- No accounts, no cloud, no subscription. Your screen never leaves your
+  network.
 
-## Setup — about 5 minutes, once
+## Setup — about 5 minutes once Python 3 is available
 
 ### On the Mac (2 steps)
 
@@ -45,11 +47,15 @@ your Mac.
    **"VNC viewers may control screen with password"** — choose a password.
    (This password is the only key to your screen. Make it a good one.)
 
-2. **Run the setup command** — open Terminal, paste:
+2. **Download `heartwood-mac-setup.sh`** from the same GitHub Release as the
+   Windows app. It normally lands in Downloads. Open Terminal and run:
 
    ```sh
-   bash heartwood-mac-setup.sh
+   bash ~/Downloads/heartwood-mac-setup.sh
    ```
+
+   If you cloned the repository instead, run
+   `bash mac-setup/heartwood-mac-setup.sh` from the repository folder.
 
    It checks your setup, installs a small relay in `~/.heartwood`
    (auto-starts on boot), and ends by telling you your Mac's address.
@@ -62,6 +68,11 @@ your Mac.
 
 3. **Run `HeartwoodVNC.exe`.** A card appears: enter the Mac's address
    (from step 2) and the password (from step 1). **Hang the frame.**
+
+   The initial v1 build is not code-signed, so Windows may identify it as an
+   unknown publisher. Download only from the official `MiruAndMu/heartwood-vnc`
+   Releases page and compare its SHA-256 with the checksum in the release notes
+   before deciding whether to run it.
 
 That's the whole thing. From then on it opens straight into your Mac.
 
@@ -90,14 +101,14 @@ That's the whole thing. From then on it opens straight into your Mac.
   Tailscale (WireGuard). **Do not** port-forward or expose ports
   5900–5902 to the internet. The safe path is the easy path: same LAN,
   or Tailscale.
-- **One active viewer, with a real tradeoff:** a new connection attempt
-  closes the current bridge connection *before* the Mac judges the
-  newcomer's password. That prevents two simultaneous viewers — but it
-  means any device that can reach the bridge can interrupt your session
-  just by knocking (it still can't get in without your password; your
-  viewer reconnects on retry). It's an availability tradeoff, not an
-  access-control guarantee — one more reason the bridge belongs on a
-  trusted network only.
+- **One active viewer, with a real tradeoff:** once a newcomer completes the
+  WebSocket opening and begins the VNC handshake, the bridge closes the
+  current connection *before* the Mac judges the newcomer's password. A bare
+  TCP open does not reach that point, but a reachable device speaking VNC can
+  interrupt your session even with a wrong password (it still cannot get in;
+  your viewer reconnects on retry). It's an availability tradeoff, not an
+  access-control guarantee — one more reason the bridge belongs on a trusted
+  network only.
 - A diagnostic log (connection events, no passwords, no screen content)
   is written locally to help with troubleshooting. Delete it anytime.
 

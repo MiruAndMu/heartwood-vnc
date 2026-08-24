@@ -19,24 +19,31 @@
 #   4. Tells you your Mac's name — the one thing you type into Heartwood VNC
 #      on your PC, along with the password YOU set in System Settings.
 #
-# Test mode (developer): HEARTWOOD_WS_PORT / HEARTWOOD_BRIDGE_PORT env vars
-# override the ports so a test install can run beside a production one.
+# Test mode (developer): HEARTWOOD_WS_PORT / HEARTWOOD_BRIDGE_PORT /
+# HEARTWOOD_VNC_PORT / HEARTWOOD_AGENT_SUFFIX / HEARTWOOD_HOME_OVERRIDE /
+# HEARTWOOD_AGENTS_OVERRIDE let a disposable test install run beside a
+# production one.
 # ============================================================================
 set -euo pipefail
 
-HW_HOME="$HOME/.heartwood"
+HW_HOME="${HEARTWOOD_HOME_OVERRIDE:-$HOME/.heartwood}"
 WS_PORT="${HEARTWOOD_WS_PORT:-5902}"
 BRIDGE_PORT="${HEARTWOOD_BRIDGE_PORT:-5901}"
-VNC_PORT=5900
-LABEL_BRIDGE="com.heartwood.bridge"
-LABEL_WS="com.heartwood.websockify"
-AGENTS="$HOME/Library/LaunchAgents"
+VNC_PORT="${HEARTWOOD_VNC_PORT:-5900}"
+AGENT_SUFFIX="${HEARTWOOD_AGENT_SUFFIX:-}"
+[[ "$AGENT_SUFFIX" =~ ^[A-Za-z0-9-]*$ ]] || { printf '  ❌ Invalid HEARTWOOD_AGENT_SUFFIX.\n' >&2; exit 1; }
+LABEL_BRIDGE="com.heartwood.bridge${AGENT_SUFFIX:+.$AGENT_SUFFIX}"
+LABEL_WS="com.heartwood.websockify${AGENT_SUFFIX:+.$AGENT_SUFFIX}"
+AGENTS="${HEARTWOOD_AGENTS_OVERRIDE:-$HOME/Library/LaunchAgents}"
 UID_NUM="$(id -u)"
 
 say()  { printf '%s\n' "$*"; }
 ok()   { printf '  ✅ %s\n' "$*"; }
 warn() { printf '  ⚠️  %s\n' "$*"; }
 die()  { printf '  ❌ %s\n' "$*" >&2; exit 1; }
+agent_loaded() { launchctl print "gui/$UID_NUM/$1" >/dev/null 2>&1; }
+agent_running() { launchctl print "gui/$UID_NUM/$1" 2>/dev/null | grep -q 'state = running'; }
+port_listener() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -n 1 || true; }
 
 # ---------------------------------------------------------------- uninstall
 if [[ "${1:-}" == "--uninstall" ]]; then
@@ -53,8 +60,8 @@ fi
 # ------------------------------------------------------------------- status
 if [[ "${1:-}" == "--status" ]]; then
   say "Heartwood on this Mac:"
-  launchctl print "gui/$UID_NUM/$LABEL_BRIDGE" >/dev/null 2>&1 && ok "bridge agent loaded" || warn "bridge agent not loaded"
-  launchctl print "gui/$UID_NUM/$LABEL_WS" >/dev/null 2>&1 && ok "websockify agent loaded" || warn "websockify agent not loaded"
+  agent_running "$LABEL_BRIDGE" && ok "bridge agent running" || warn "bridge agent not running"
+  agent_running "$LABEL_WS" && ok "websockify agent running" || warn "websockify agent not running"
   nc -z localhost "$VNC_PORT" 2>/dev/null && ok "Screen Sharing answering on :$VNC_PORT" || warn "nothing on :$VNC_PORT — Screen Sharing off?"
   nc -z localhost "$BRIDGE_PORT" 2>/dev/null && ok "bridge answering on :$BRIDGE_PORT" || warn "bridge not answering on :$BRIDGE_PORT"
   nc -z localhost "$WS_PORT" 2>/dev/null && ok "websockify answering on :$WS_PORT" || warn "websockify not answering on :$WS_PORT"
@@ -137,7 +144,7 @@ mkdir -p "$HW_HOME/logs"
 if [[ ! -x "$HW_HOME/venv/bin/websockify" ]]; then
   say "  installing relay (one-time, ~30s)…"
   python3 -m venv "$HW_HOME/venv" >/dev/null
-  "$HW_HOME/venv/bin/pip" -q install websockify >/dev/null
+  "$HW_HOME/venv/bin/pip" -q install 'websockify==0.13.0' >/dev/null
 fi
 ok "relay installed ($HW_HOME)"
 
@@ -280,6 +287,17 @@ BRIDGEEOF
 ok "pass-through bridge written (stores no password, ever)"
 
 # 6. launchd agents — alive now, alive after every reboot
+# Stop only our own prior agents first. If either port remains occupied after
+# that, fail clearly rather than mistaking an unrelated/legacy listener for a
+# successful Heartwood install.
+launchctl bootout "gui/$UID_NUM/$LABEL_WS" 2>/dev/null || true
+launchctl bootout "gui/$UID_NUM/$LABEL_BRIDGE" 2>/dev/null || true
+sleep 1
+for port in "$BRIDGE_PORT" "$WS_PORT"; do
+  holder="$(port_listener "$port")"
+  [[ -z "$holder" ]] || die "Port :$port is already in use (PID $holder). Stop the existing relay, then re-run setup."
+done
+
 write_plist() {
   local label="$1"; shift
   local out="$AGENTS/$label.plist"
@@ -299,7 +317,6 @@ write_plist() {
     printf '  <key>StandardErrorPath</key><string>%s/logs/%s.log</string>\n' "$HW_HOME" "$label"
     printf '</dict>\n</plist>\n'
   } > "$out"
-  launchctl bootout "gui/$UID_NUM/$label" 2>/dev/null || true
   launchctl bootstrap "gui/$UID_NUM" "$out"
 }
 
@@ -309,6 +326,8 @@ ok "launch agents installed (auto-start on every boot)"
 
 # 7. Verify the chain end to end
 sleep 2
+agent_running "$LABEL_BRIDGE" || die "bridge agent failed to stay running — see $HW_HOME/logs/"
+agent_running "$LABEL_WS" || die "websockify agent failed to stay running — see $HW_HOME/logs/"
 nc -z localhost "$BRIDGE_PORT" 2>/dev/null || die "bridge didn't come up on :$BRIDGE_PORT — see $HW_HOME/logs/"
 nc -z localhost "$WS_PORT" 2>/dev/null || die "websockify didn't come up on :$WS_PORT — see $HW_HOME/logs/"
 ok "relay chain is up  (:$WS_PORT → :$BRIDGE_PORT → :$VNC_PORT)"

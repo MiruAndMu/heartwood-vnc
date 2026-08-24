@@ -5,12 +5,16 @@
   "description": "Heartwood VNC \u2014 your Mac, framed on your PC. A living window in handcrafted wood.",
   "main": "main.js",
   "scripts": {
+    "check": "node --check main.js && node --check preload.js && node tests/release-smoke.mjs",
+    "inspect:dist": "node tests/inspect-asar.mjs",
+    "test:bridge": "python3 tests/test-vnc-bridge.py",
     "start": "electron .",
-    "dist": "electron-builder --win portable"
+    "dist": "npm run check && electron-builder --win portable"
   },
   "devDependencies": {
-    "electron": "38.2.2",
-    "electron-builder": "^26.0.0"
+    "@electron/asar": "3.4.1",
+    "electron": "43.4.1",
+    "electron-builder": "26.15.3"
   },
   "build": {
     "appId": "com.miruandmu.heartwood-vnc",
@@ -19,7 +23,9 @@
       "index.html",
       "main.js",
       "preload.js",
-      "novnc/**"
+      "novnc/**",
+      "LICENSE",
+      "THIRD_PARTY.md"
     ],
     "win": {
       "target": [

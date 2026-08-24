@@ -1,6 +1,9 @@
 node_modules/
 dist/
-build/
+build/*
+!build/icon.ico
 *.bak*
 .DS_Store
 *.log
+__pycache__/
+*.pyc

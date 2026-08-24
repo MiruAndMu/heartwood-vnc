@@ -1257,10 +1257,6 @@
 <script type="module">
   import RFB from './novnc/core/rfb.js';
 
-  // ============================================================
-  // Electron loadFile() serves from file:// with no hostname, so
-  // we hardcode the Mac target. Change here if the host moves.
-  // ============================================================
   // Connection config — loaded from main (heartwood-config.json, password
   // encrypted at rest). No addresses or secrets live in this file anymore.
   let MACCFG = null;                     // { host, port, password }
@@ -1346,7 +1342,7 @@
     const d = display();
     if (!d || !d.width) return;
     // Framed mode uses our custom crop/viewport math, so hand scale ownership
-    // back to Looking Glass before setting the cropped viewport below.
+    // back to Heartwood before setting the cropped viewport below.
     if (rfb && rfb.scaleViewport) rfb.scaleViewport = false;
     // Clamp the region to the framebuffer.
     let { x, y, w, h } = region;
@@ -2022,7 +2018,7 @@
   // Never-connected streak (vs quickDrops, which counts connected-then-died):
   // a wrong password / sleeping Mac / bad address loops on "reconnecting…"
   // forever without EVER firing 'connect'. After a few straight misses the
-  // setup card surfaces on its own (Mu's UX call, 2026-07-21) — and auto-
+  // setup card surfaces on its own after a few failures — and auto-
   // dismisses if a background retry lands, so transient outages never
   // wrongly demand re-setup.
   let sawConnect = false;      // did THIS attempt reach 'connect'?
@@ -2067,13 +2063,13 @@
       status.textContent = '🦊 looking through';
       status.classList.add('connected');
       setConnView('ok');
-      console.log('LG-DEBUG VNC CONNECTED');
+      console.log('HW-DEBUG VNC CONNECTED');
       setTimeout(() => {
         try {
           const cur = getComputedStyle(rfb._canvas).cursor;
-          console.log('LG-DEBUG canvas cursor 3s after connect:',
+          console.log('HW-DEBUG canvas cursor 3s after connect:',
                       cur.length > 60 ? cur.slice(0, 60) + '…(remote cursor image)' : cur);
-        } catch (e) { console.log('LG-DEBUG cursor probe failed:', e.message); }
+        } catch (e) { console.log('HW-DEBUG cursor probe failed:', e.message); }
       }, 3000);
       // Take over layout. noVNC's own ResizeObserver re-asserts scale=1 /
       // no-clip on a deferred frame after every layout change, stomping our
@@ -2103,7 +2099,7 @@
     rfb.addEventListener('disconnect', () => {
       status.classList.remove('connected');
       setConnView('warn');
-      console.log('LG-DEBUG VNC DISCONNECTED after', Date.now() - connectedAt, 'ms; quickDrops=', quickDrops);
+      console.log('HW-DEBUG VNC DISCONNECTED after', Date.now() - connectedAt, 'ms; quickDrops=', quickDrops);
       if (fatal) return;
       if (!sawConnect) {
         failStreak++;
@@ -2116,7 +2112,7 @@
       }
       quickDrops = (Date.now() - connectedAt < QUICK_LIFE) ? quickDrops + 1 : 0;
       if (quickDrops >= QUICK_LIMIT) {
-        console.log('LG-DEBUG TAKEOVER PILL SHOWN (another window owns the screen)');
+        console.log('HW-DEBUG TAKEOVER PILL SHOWN (another window owns the screen)');
         status.textContent = '👆 another window has the screen — tap to take over';
         status.classList.add('takeover');
         return;
@@ -2172,6 +2168,14 @@
     let port = 5902;
     const m = host.match(/^(.*):(\d+)$/);
     if (m) { host = m[1]; port = parseInt(m[2], 10); }
+    if (!host || host.length > 253 || /[^A-Za-z0-9._-]/.test(host)) {
+      frErr.textContent = 'Use a hostname or IPv4 address, such as mac-name.local or 192.168.1.20.';
+      return;
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      frErr.textContent = 'Port must be between 1 and 65535.';
+      return;
+    }
     // Blank password + an existing saved one = keep the saved password
     // (lets you fix a typo'd address without re-typing the password).
     const password = frPass.value || (MACCFG && MACCFG.password) || '';
@@ -2215,14 +2219,14 @@
   boot();
 
   // ---- temporary diagnostics (read via lg-debug.log on the PC) ----------
-  console.log('LG-DEBUG renderer alive; inner=', window.innerWidth, 'x', window.innerHeight);
-  window.addEventListener('error', (e) => console.log('LG-DEBUG window error:', e.message));
+  console.log('HW-DEBUG renderer alive; inner=', window.innerWidth, 'x', window.innerHeight);
+  window.addEventListener('error', (e) => console.log('HW-DEBUG window error:', e.message));
   let sawMove = false;
   document.addEventListener('mousemove', (e) => {
-    if (!sawMove) { sawMove = true; console.log('LG-DEBUG first mousemove at', e.clientX, e.clientY); }
+    if (!sawMove) { sawMove = true; console.log('HW-DEBUG first mousemove at', e.clientX, e.clientY); }
   }, true);
   document.addEventListener('mousedown', (e) => {
-    console.log('LG-DEBUG mousedown at', e.clientX, e.clientY, 'on', e.target.id || e.target.tagName);
+    console.log('HW-DEBUG mousedown at', e.clientX, e.clientY, 'on', e.target.id || e.target.tagName);
   }, true);
 </script>
 </body>

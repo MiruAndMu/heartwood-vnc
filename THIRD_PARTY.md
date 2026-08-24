@@ -5,7 +5,7 @@ or depended upon, with gratitude:
 
 ## Vendored
 
-- **[noVNC](https://github.com/novnc/noVNC)** (`novnc/`) — the HTML5 VNC
+- **[noVNC 1.5.0](https://github.com/novnc/noVNC/tree/v1.5.0)** (`novnc/`) — the HTML5 VNC
   client that renders your Mac inside the frame. Licensed under the
   **Mozilla Public License 2.0**; its complete, unmodified license and
   author credits ship in this repository (`novnc/LICENSE.txt`,
@@ -14,10 +14,10 @@ or depended upon, with gratitude:
 
 ## Dependencies (not vendored)
 
-- **[Electron](https://electronjs.org)** (MIT) — the desktop shell.
-- **[electron-builder](https://www.electron.build)** (MIT) — builds the
+- **[Electron 43.4.1](https://electronjs.org)** (MIT) — the desktop shell.
+- **[electron-builder 26.15.3](https://www.electron.build)** (MIT) — builds the
   Windows portable executable.
-- **[websockify](https://github.com/novnc/websockify)** (LGPL-3.0) — the
+- **[websockify 0.13.0](https://github.com/novnc/websockify)** (LGPL-3.0) — the
   WebSocket→VNC relay the Mac setup script installs on the Mac side
   (fetched at setup time; not distributed with this app).
 - **macOS Screen Sharing** — the VNC server is Apple's own; Heartwood
